@@ -27,11 +27,13 @@ type SelectedColumns = [SelectColumn]
 type SelectedTables = [TableName]
 
 data ParsedStatement
-  = SelectAll TableName
-  | SelectColumns SelectedTables SelectedColumns
+  = SelectAll SelectedTables (Maybe WhereClause)
+  | SelectAggregate SelectedTables SelectedColumns (Maybe WhereClause)
+  | SelectColumns SelectedTables SelectedColumns (Maybe WhereClause)
   | DeleteStatement TableName (Maybe WhereClause)
-  | InsertStatement TableName [Column] Row
-  | UpdateStatement TableName [Column] Row (Maybe WhereClause)
+  | InsertStatement TableName SelectedColumns Row
+  | UpdateStatement TableName SelectedColumns Row (Maybe WhereClause)
+  | Invalid
   deriving (Show, Eq)
 
 data WhereClause
@@ -53,7 +55,7 @@ data ConditionValue
   | IntValue Integer
   deriving (Show, Eq)
 
-data StatementType = Select | Delete | Insert | Update 
+data StatementType = Select | Delete | Insert | Update
 
 data ExecutionAlgebra next
   = LoadFiles [TableName] ([FileContent] -> next)
@@ -62,6 +64,7 @@ data ExecutionAlgebra next
   | GetTime (UTCTime -> next)
   | GetStatementType SQLQuery (StatementType -> next)
   | ParseSql SQLQuery (ParsedStatement -> next)
+  | IsParsedStatementValid ParsedStatement [(TableName, DataFrame)] (Bool -> next)
   | GetTableNames ParsedStatement ([TableName] -> next)
   | DeleteRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | InsertRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
@@ -91,6 +94,9 @@ getStatementType query = liftF $ GetStatementType query id
 parseSql :: SQLQuery -> Execution ParsedStatement
 parseSql query = liftF $ ParseSql query id
 
+isParsedStatementValid :: ParsedStatement -> [(TableName, DataFrame)] -> Execution Bool
+isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables id
+
 getTableNames :: ParsedStatement -> Execution [TableName]
 getTableNames statement = liftF $ GetTableNames statement id
 
@@ -116,28 +122,30 @@ executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
 executeSql statement = do
   statementType <- getStatementType statement
   parsedStatement <- parseSql statement
-  
+
   tableNames <- getTableNames parsedStatement
   tableFiles <- loadFiles tableNames
   tables <- parseTables tableFiles
-  
-  _ <- case statementType of 
-    Select -> do
-      columns <- getSelectedColumns parsedStatement tables
-      rows <- getReturnTableRows parsedStatement tables
-      df <- generateDataFrame columns rows
-      return $ Right df
-    Delete -> do
-      (name, df) <- deleteRows parsedStatement tables
-      updateTable (name, df)
-      return $ Right df 
-    Insert -> do
-      (name, df) <- insertRows parsedStatement tables
-      updateTable (name, df)
-      return $ Right df
-    Update -> do
-      (name, df) <- updateRows parsedStatement tables
-      updateTable (name, df)
-      return $ Right df
+  isValid <- isParsedStatementValid parsedStatement tables
 
-  return $ Left "errr"
+  if not isValid
+    then return $ Left "err"
+  else
+    case statementType of
+      Select -> do
+        columns <- getSelectedColumns parsedStatement tables
+        rows <- getReturnTableRows parsedStatement tables
+        df <- generateDataFrame columns rows
+        return $ Right df
+      Delete -> do
+        (name, df) <- deleteRows parsedStatement tables
+        updateTable (name, df)
+        return $ Right df
+      Insert -> do
+        (name, df) <- insertRows parsedStatement tables
+        updateTable (name, df)
+        return $ Right df
+      Update -> do
+        (name, df) <- updateRows parsedStatement tables
+        updateTable (name, df)
+        return $ Right df
