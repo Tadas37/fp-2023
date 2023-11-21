@@ -2,6 +2,7 @@
 
 module Lib3
   ( executeSql,
+    parseTable,
     Execution,
     ExecutionAlgebra(..),
     loadFiles,
@@ -10,13 +11,43 @@ module Lib3
 where
 
 import Control.Monad.Free (Free (..), liftF)
-import DataFrame (Column(..), DataFrame(..), Row)
+import DataFrame (Column(..), ColumnType(..), Value(..), Row, DataFrame(..))
+import Data.Yaml (decodeEither')
+import Data.Text.Encoding as TE
+import Data.Text as T
+import qualified Data.Yaml as Y
+import Data.Char (toLower)
 import Data.Time (UTCTime)
+import qualified Data.Aeson.Key as Key
+
 type TableName = String
 type FileContent = String
 type ErrorMessage = String
 type SQLQuery = String
 type ColumnName = String
+
+data SerializedTable = SerializedTable
+  { tableName :: TableName
+  , columns   :: [SerializedColumn]
+  , rows      :: [[Y.Value]]
+  }
+
+data SerializedColumn = SerializedColumn
+  { name     :: String
+  , dataType :: String
+  }
+
+instance Y.FromJSON SerializedTable where
+  parseJSON = Y.withObject "SerializedTable" $ \v -> SerializedTable
+    <$> v Y..: Key.fromString "tableName"
+    <*> v Y..: Key.fromString "columns"
+    <*> v Y..: Key.fromString "rows"
+
+instance Y.FromJSON SerializedColumn where
+  parseJSON = Y.withObject "SerializedColumn" $ \v -> SerializedColumn
+    <$> v Y..: Key.fromString "name"
+    <*> v Y..: Key.fromString "dataType"
+  
 
 data SelectColumn
   = Now
@@ -59,7 +90,7 @@ data StatementType = Select | Delete | Insert | Update
 
 data ExecutionAlgebra next
   = LoadFiles [TableName] ([FileContent] -> next)
-  | ParseTables [FileContent] ([(TableName, DataFrame)] -> next)
+  | ParseTable FileContent (Either ErrorMessage (TableName, DataFrame) -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
   | GetStatementType SQLQuery (StatementType -> next)
@@ -79,8 +110,8 @@ type Execution = Free ExecutionAlgebra
 loadFiles :: [TableName] -> Execution [FileContent]
 loadFiles names = liftF $ LoadFiles names id
 
-parseTables :: [FileContent] -> Execution [(TableName, DataFrame)]
-parseTables content = liftF $ ParseTables content id
+parseTable :: FileContent -> Execution (Either ErrorMessage (TableName, DataFrame))
+parseTable content = liftF $ ParseTable content id
 
 updateTable :: (TableName, DataFrame) -> Execution ()
 updateTable table = liftF $ UpdateTable table ()
@@ -125,7 +156,10 @@ executeSql statement = do
 
   tableNames <- getTableNames parsedStatement
   tableFiles <- loadFiles tableNames
-  tables <- parseTables tableFiles
+ 
+  tablesResults <- mapM parseTable tableFiles
+  let tables = [df | Right df <- tablesResults] 
+ 
   isValid <- isParsedStatementValid parsedStatement tables
 
   if not isValid

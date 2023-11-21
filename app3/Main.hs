@@ -66,3 +66,10 @@ runExecuteIO (Free step) = do
         -- probably you will want to extend the interpreter
         runStep :: Lib3.ExecutionAlgebra a -> IO a
         runStep (Lib3.GetTime next) = getCurrentTime >>= return . next
+        runStep (Lib3.LoadFiles tableNames next) = do
+          fileContents <- mapM (readFile . getTableFilePath) tableNames
+          return $ next fileContents
+
+        getTableFilePath :: String -> String
+        getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
+      
