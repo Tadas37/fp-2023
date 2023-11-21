@@ -33,7 +33,7 @@ data ParsedStatement
   | DeleteStatement TableName (Maybe WhereClause)
   | InsertStatement TableName SelectedColumns Row
   | UpdateStatement TableName SelectedColumns Row (Maybe WhereClause)
-  | Invalid
+  | Invalid ErrorMessage
   deriving (Show, Eq)
 
 data WhereClause
@@ -55,10 +55,11 @@ data ConditionValue
   | IntValue Integer
   deriving (Show, Eq)
 
-data StatementType = Select | Delete | Insert | Update
+data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables
 
 data ExecutionAlgebra next
   = LoadFiles [TableName] ([FileContent] -> next)
+  | GetTableDfByName TableName [(TableName, DataFrame)] (DataFrame -> next)
   | ParseTables [FileContent] ([(TableName, DataFrame)] -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
@@ -70,14 +71,21 @@ data ExecutionAlgebra next
   | InsertRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | UpdateRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | GetSelectedColumns ParsedStatement [(TableName, DataFrame)] ([Column] -> next)
-  | GetReturnTableRows ParsedStatement [(TableName, DataFrame)] ([Row] -> next)
+  | GetReturnTableRows ParsedStatement [(TableName, DataFrame)] UTCTime ([Row] -> next)
   | GenerateDataFrame [Column] [Row] (DataFrame -> next)
+  | ShowTablesFunction [TableName] (DataFrame -> next)
+  | ShowTableFunction DataFrame (DataFrame -> next)
+  | GetNotSelectTableName ParsedStatement (TableName -> next)
+
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
 
 loadFiles :: [TableName] -> Execution [FileContent]
 loadFiles names = liftF $ LoadFiles names id
+
+getTableDfByName :: TableName -> [(TableName, DataFrame)] -> Execution DataFrame
+getTableDfByName tableName tables = liftF $ GetTableDfByName tableName tables id
 
 parseTables :: [FileContent] -> Execution [(TableName, DataFrame)]
 parseTables content = liftF $ ParseTables content id
@@ -112,40 +120,58 @@ updateRows statement tables = liftF $ UpdateRows statement tables id
 getSelectedColumns :: ParsedStatement -> [(TableName, DataFrame)] -> Execution [Column]
 getSelectedColumns statement tables = liftF $ GetSelectedColumns statement tables id
 
-getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution [Row]
-getReturnTableRows parsedStatement usedTables = liftF $ GetReturnTableRows parsedStatement usedTables id
+getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> Execution [Row]
+getReturnTableRows parsedStatement usedTables time = liftF $ GetReturnTableRows parsedStatement usedTables time id
 
 generateDataFrame :: [Column] -> [Row] -> Execution DataFrame
 generateDataFrame columns rows = liftF $ GenerateDataFrame columns rows id
 
+showTablesFunction :: [TableName] -> Execution DataFrame
+showTablesFunction tables = liftF $ ShowTablesFunction tables id
+
+showTableFunction :: DataFrame -> Execution DataFrame
+showTableFunction table = liftF $ ShowTableFunction table id 
+
+getNonSelectTableName :: ParsedStatement -> Execution TableName
+getNonSelectTableName statement = liftF $ GetNotSelectTableName statement id
+
 executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
 executeSql statement = do
-  statementType <- getStatementType statement
   parsedStatement <- parseSql statement
 
-  tableNames <- getTableNames parsedStatement
-  tableFiles <- loadFiles tableNames
-  tables <- parseTables tableFiles
-  isValid <- isParsedStatementValid parsedStatement tables
+  tableNames    <- getTableNames parsedStatement
+  tableFiles    <- loadFiles tableNames
+  tables        <- parseTables tableFiles
+  isValid       <- isParsedStatementValid parsedStatement tables
+  statementType <- getStatementType statement
+  timeStamp     <- getTime
 
   if not isValid
     then return $ Left "err"
   else
     case statementType of
       Select -> do
-        columns <- getSelectedColumns parsedStatement tables
-        rows <- getReturnTableRows parsedStatement tables
-        df <- generateDataFrame columns rows
+        columns     <- getSelectedColumns parsedStatement tables
+        rows        <- getReturnTableRows parsedStatement tables timeStamp
+        df          <- generateDataFrame columns rows
         return $ Right df
       Delete -> do
-        (name, df) <- deleteRows parsedStatement tables
+        (name, df)  <- deleteRows parsedStatement tables
         updateTable (name, df)
         return $ Right df
       Insert -> do
-        (name, df) <- insertRows parsedStatement tables
+        (name, df)  <- insertRows parsedStatement tables
         updateTable (name, df)
         return $ Right df
       Update -> do
-        (name, df) <- updateRows parsedStatement tables
+        (name, df)  <- updateRows parsedStatement tables
         updateTable (name, df)
         return $ Right df
+      ShowTables -> do
+        allTables   <- showTablesFunction tableNames
+        return $ Right allTables
+      ShowTable -> do
+        nonSelectTableName <- getNonSelectTableName parsedStatement
+        df          <- getTableDfByName nonSelectTableName tables
+        allTables   <- showTableFunction df
+        return $ Right allTables

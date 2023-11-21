@@ -27,17 +27,21 @@ data ParsedStatement
   = ShowTable TableName
   | ShowTables
   | SelectAll TableName (Maybe WhereClause)
-  | AvgColumn TableName String (Maybe WhereClause)
   | SelectColumns TableName [String] (Maybe WhereClause)
-  | MaxColumn TableName String (Maybe WhereClause)
+  | AggregateSelect TableName [AggregateColumn] (Maybe WhereClause)
   deriving (Show, Eq)
 
-data AllColumns = AllColumns 
+data AllColumns = AllColumns
   deriving (Show, Eq)
 
 data WhereClause
   = IsValueBool Bool TableName String
   | Conditions [Condition]
+  deriving (Show, Eq)
+
+data AggregateColumn
+  = MaxColumn String
+  | AvgColumn String
   deriving (Show, Eq)
 
 data Condition
@@ -108,11 +112,27 @@ parseSelect statement = parseFunctionBody
     parseFunctionBody = case statementClause of
       Left err -> Left err
       Right clause
+        | not (null columnNames) && listConsistsOfValidAggregates columnNames tableName -> Right $ AggregateSelect tableName (map parseAggregate columnNames) clause
         | length columnWords == 1 && head columnWords == "*"-> Right (SelectAll tableName clause)
-        | length columnWords == 1 && "avg(" `isPrefixOf` head columnWords && ")" `isSuffixOf` head columnWords && columnNameExists tableName columnName -> Right (AvgColumn tableName columnName clause)
-        | length columnWords == 1 && "max(" `isPrefixOf` head columnWords && ")" `isSuffixOf` head columnWords && columnNameExists tableName columnName -> Right (MaxColumn tableName columnName clause)
         | not (null columnNames) && all (columnNameExists tableName) columnNames -> Right (SelectColumns tableName columnNames clause)
         | otherwise -> Left "Unsupported or invalid statement"
+
+listConsistsOfValidAggregates :: [String] -> TableName -> Bool
+listConsistsOfValidAggregates [] _ = True
+listConsistsOfValidAggregates [columnName] tableName
+  | "avg(" `isPrefixOf` columnName && ")" `isSuffixOf` columnName && isColumn && columnIsInt = True
+  | "max(" `isPrefixOf` columnName && ")" `isSuffixOf` columnName && isColumn = True
+  | otherwise = False
+  where
+    selectedColumn = init (drop 4 columnName)
+    isColumn = columnNameExists tableName selectedColumn
+    columnIsInt = getColumnType (getColumnByName selectedColumn (columns (getDataFrameByName tableName))) == IntegerType
+listConsistsOfValidAggregates (x : xs) tableName = listConsistsOfValidAggregates [x] tableName && listConsistsOfValidAggregates xs tableName
+
+parseAggregate :: String -> AggregateColumn
+parseAggregate columnName
+  | "avg" `isPrefixOf` columnName = AvgColumn $ drop 4 $ init columnName
+  | "max" `isPrefixOf` columnName = MaxColumn $ drop 4 $ init columnName
 
 parseWhereBoolIsTrueFalse :: [String] ->Either ErrorMessage WhereClause
 parseWhereBoolIsTrueFalse fromAndWhere
@@ -233,11 +253,18 @@ executeStatement (ShowTable tableName) =
     Nothing -> Left $ "Table " ++ tableName ++ " not found"
 executeStatement ShowTables =
   Right $ DataFrame [Column "Tables" StringType] (map (\(name, _) -> [StringValue name]) database)
-executeStatement (AvgColumn tableName columnName whereCondition) = calculateAverageFromTableColumn tableName columnName whereCondition
 executeStatement (SelectColumns tableName columnNames whereCondition) = selectSpecifiedColumnsFromTable tableName columnNames whereCondition
-executeStatement (MaxColumn tableName columnName whereCondition) = case sqlMax (executeWhere whereCondition tableName) columnName of
-  Right value -> Right (DataFrame [getColumnByName columnName (columns (getDataFrameByName tableName))] [[value]])
-  Left msg -> Left msg
+executeStatement (AggregateSelect tableName aggregates whereCondition) = Right $ DataFrame parsedColumns [parsedRow]
+  where
+    df = executeWhere whereCondition tableName
+    listAggregateColumns = map (`aggregateColumnToValue` df) aggregates
+    parsedColumns = map fst listAggregateColumns
+    parsedRow = map snd listAggregateColumns
+
+-- executeStatement (AvgColumn tableName columnName whereCondition) = calculateAverageFromTableColumn tableName columnName whereCondition
+-- executeStatement (MaxColumn tableName columnName whereCondition) = case sqlMax (executeWhere whereCondition tableName) columnName of
+  -- Right value -> Right (DataFrame [getColumnByName columnName (columns (getDataFrameByName tableName))] [[value]])
+  -- Left msg -> Left msg
 executeStatement (SelectAll tableName whereCondition) =
   Right $ executeWhere whereCondition tableName
 
@@ -372,11 +399,11 @@ selectColumnsFromDataFrame whereCondition tableName columnIndices = do
 selectSpecifiedColumnsFromTable :: TableName -> [String] -> Maybe WhereClause -> Either ErrorMessage DataFrame
 selectSpecifiedColumnsFromTable tableName columnNames whereCondition =
     case lookup tableName database of
-        Just df ->
-            case mapM (`findColumnIndex` df) columnNames of
-                Just columnIndices -> selectColumnsFromDataFrame whereCondition tableName columnIndices
-                Nothing -> Left $ "One or more columns not found in table " ++ tableName
-        Nothing -> Left $ "Table " ++ tableName ++ " not found"
+      Just df ->
+        case mapM (`findColumnIndex` df) columnNames of
+          Just columnIndices -> selectColumnsFromDataFrame whereCondition tableName columnIndices
+          Nothing -> Left $ "One or more columns not found in table " ++ tableName
+      Nothing -> Left $ "Table " ++ tableName ++ " not found"
 
 --AVG agregate function
 averageOfIntValues :: [Value] -> Either ErrorMessage DataFrame
@@ -387,19 +414,41 @@ averageOfIntValues validIntValues
           avg = fromIntegral sumValues / fromIntegral (length validIntValues)
       in Right $ DataFrame [Column "AVG" IntegerType] [[IntegerValue (round avg)]]
 
+averageOfIntValues' :: [Value] -> Value
+averageOfIntValues' values
+  | null values || all isNullValue values = NullValue
+  | otherwise = IntegerValue avg
+  where
+    sumValues = sumIntValues values
+    avg = sumValues `div` fromIntegral (length values)
+
+aggregateColumnToValue :: AggregateColumn -> DataFrame -> (Column, Value)
+aggregateColumnToValue (AvgColumn columnName) dataFrame = (avgColumn, averageOfIntValues' validIntValues)
+  where
+    avgColumn = Column ("avg " ++ columnName) IntegerType
+    values = map (\row -> getColumnValue (findColumnIndexUnsafe columnName dataFrame) row) (getDataFrameRows dataFrame)
+    validIntValues = filter isIntegerValue values
+
+aggregateColumnToValue (MaxColumn columnName) dataFrame = 
+  case sqlMax dataFrame columnName of 
+    Right value -> (maxColumn, value)
+    Left _ -> (maxColumn, NullValue)
+  where
+    maxColumn = Column ("max " ++ columnName) $ getColumnType $ getColumnByName columnName $ columns dataFrame
+
 calculateAverageFromTableColumn :: TableName -> String -> Maybe WhereClause -> Either ErrorMessage DataFrame
 calculateAverageFromTableColumn tableName columnName whereCondition =
     case lookup tableName database of
-        Just df ->
-            case findColumnIndex columnName df of
-                Just columnIndex ->
-                    let values = map (\row -> getColumnValue columnIndex row) (getDataFrameRows (executeWhere whereCondition tableName))
-                        validIntValues = filter isIntegerValue values
-                    in if null validIntValues
-                        then Left "No valid integers found in the specified column"
-                        else averageOfIntValues validIntValues
-                Nothing -> Left $ "Column " ++ columnName ++ " not found in table " ++ tableName
-        Nothing -> Left $ "Table " ++ tableName ++ " not found"
+      Just df ->
+        case findColumnIndex columnName df of
+          Just columnIndex ->
+            let values = map (\row -> getColumnValue columnIndex row) (getDataFrameRows (executeWhere whereCondition tableName))
+                validIntValues = filter isIntegerValue values
+            in if null validIntValues
+              then Left "No valid integers found in the specified column"
+              else averageOfIntValues validIntValues
+          Nothing -> Left $ "Column " ++ columnName ++ " not found in table " ++ tableName
+      Nothing -> Left $ "Table " ++ tableName ++ " not found"
 
 
 -- max aggregate function
@@ -413,9 +462,6 @@ sqlMax df col
 
     isRightValue :: Column -> Bool
     isRightValue (Column _ valueType) = valueType == IntegerType || valueType == StringType || valueType == BoolType
-
-    getValues :: [Row] -> Int -> [Value]
-    getValues rows index = map (!! index) rows
 
     maximum'' :: [Value] -> Value
     maximum'' [x] = x
@@ -466,6 +512,12 @@ findColumnIndex :: String -> DataFrame -> Maybe Int
 findColumnIndex columnName (DataFrame cols _) =
   elemIndex columnName (map (\(Column name _) -> name) cols)
 
+findColumnIndexUnsafe :: String -> DataFrame -> Int
+findColumnIndexUnsafe columnName (DataFrame cols _) =
+  fromMaybe 1 (elemIndex columnName (map (\(Column name _) -> name) cols))
+
+
+
 getColumnValue :: Int -> Row -> Value
 getColumnValue columnIndex row = row !! columnIndex
 
@@ -493,3 +545,6 @@ isNumber xs =
 compareMaybe :: Eq a => a -> Maybe a -> Bool
 compareMaybe val1 (Just val2) = val1 == val2
 compareMaybe _ Nothing = False
+
+getValues :: [Row] -> Int -> [Value]
+getValues rows index = map (!! index) rows
