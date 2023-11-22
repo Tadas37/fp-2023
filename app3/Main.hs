@@ -2,13 +2,14 @@ module Main (main) where
 
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Free (Free (..))
-
 import Data.Functor((<&>))
 import Data.Time ( UTCTime, getCurrentTime )
 import Data.List qualified as L
 import Lib1 qualified
 import Lib2 qualified
 import Lib3 qualified
+import Data.Either (partitionEithers)
+import Data.List (intercalate)
 import System.Console.Repline
   ( CompleterStyle (Word),
     ExitDecision (Exit),
@@ -65,11 +66,17 @@ runExecuteIO (Free step) = do
     where
         -- probably you will want to extend the interpreter
         runStep :: Lib3.ExecutionAlgebra a -> IO a
-        runStep (Lib3.GetTime next) = getCurrentTime >>= return . next
+        runStep (Lib3.GetTime next) = 
+          getCurrentTime >>= return . next
         runStep (Lib3.LoadFiles tableNames next) = do
           fileContents <- mapM (readFile . getTableFilePath) tableNames
           return $ next fileContents
+        runStep (Lib3.ParseTables contents next) = do
+          let parsedTables = map Lib3.parseYAMLContent contents
+          let (errors, tables) = partitionEithers parsedTables
+          if null errors
+            then return $ next tables
+            else error $ "YAML parsing errors: " ++ intercalate "; " errors
 
         getTableFilePath :: String -> String
         getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
-      

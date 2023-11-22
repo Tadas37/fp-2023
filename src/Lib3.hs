@@ -2,11 +2,12 @@
 
 module Lib3
   ( executeSql,
-    parseTable,
+    parseTables,
     Execution,
     ExecutionAlgebra(..),
     loadFiles,
     getTime,
+    parseYAMLContent,
   )
 where
 
@@ -19,6 +20,7 @@ import qualified Data.Yaml as Y
 import Data.Char (toLower)
 import Data.Time (UTCTime)
 import qualified Data.Aeson.Key as Key
+import qualified Data.ByteString.Char8 as BS
 
 type TableName = String
 type FileContent = String
@@ -90,8 +92,8 @@ data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables
 
 data ExecutionAlgebra next
   = LoadFiles [TableName] ([FileContent] -> next)
-  | ParseTable FileContent (Either ErrorMessage (TableName, DataFrame) -> next)
-  |  GetTableDfByName TableName [(TableName, DataFrame)] (DataFrame -> next)
+  | ParseTables [FileContent] ([(TableName, DataFrame)] -> next)
+  | GetTableDfByName TableName [(TableName, DataFrame)] (DataFrame -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
   | GetStatementType SQLQuery (StatementType -> next)
@@ -115,8 +117,8 @@ type Execution = Free ExecutionAlgebra
 loadFiles :: [TableName] -> Execution [FileContent]
 loadFiles names = liftF $ LoadFiles names id
 
-parseTable :: FileContent -> Execution (Either ErrorMessage (TableName, DataFrame))
-parseTable content = liftF $ ParseTable content id
+parseTables :: [FileContent] -> Execution [(TableName, DataFrame)]
+parseTables content = liftF $ ParseTables content id
 
 getTableDfByName :: TableName -> [(TableName, DataFrame)] -> Execution DataFrame
 getTableDfByName tableName tables = liftF $ GetTableDfByName tableName tables id
@@ -173,12 +175,9 @@ executeSql statement = do
 
   tableNames <- getTableNames parsedStatement
   tableFiles <- loadFiles tableNames
+  tables <- parseTables tableFiles
   statementType <- getStatementType statement
   timeStamp     <- getTime
- 
-  tablesResults <- mapM parseTable tableFiles
-  let tables = [df | Right df <- tablesResults] 
- 
   isValid <- isParsedStatementValid parsedStatement tables
 
 
@@ -211,3 +210,33 @@ executeSql statement = do
         df          <- getTableDfByName nonSelectTableName tables
         allTables   <- showTableFunction df
         return $ Right allTables
+
+parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
+parseYAMLContent content = 
+  case decodeEither' (BS.pack content) of
+    Left err -> Left $ "YAML parsing error: " ++ show err
+    Right serializedTable -> Right $ convertToDataFrame serializedTable
+
+convertToDataFrame :: SerializedTable -> (TableName, DataFrame)
+convertToDataFrame st = (tableName st, DataFrame (Prelude.map convertColumn $ columns st) (convertRows $ rows st))
+
+convertColumn :: SerializedColumn -> Column
+convertColumn sc = Column (name sc) (convertColumnType $ dataType sc)
+
+convertColumnType :: String -> ColumnType
+convertColumnType dt = case dt of
+    "integer" -> IntegerType
+    "string" -> StringType
+    "boolean" -> BoolType
+    _ -> error "Unknown column type"
+
+convertRows :: [[Y.Value]] -> [Row]
+convertRows = Prelude.map (Prelude.map convertValue)
+
+convertValue :: Y.Value -> DataFrame.Value
+convertValue val = case val of
+    Y.String s -> DataFrame.StringValue (T.unpack s)
+    Y.Number n -> DataFrame.IntegerValue (round n) 
+    Y.Bool b -> DataFrame.BoolValue b
+    Y.Null -> DataFrame.NullValue
+    _ -> error "Unsupported value type"
