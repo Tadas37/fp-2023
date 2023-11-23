@@ -45,6 +45,7 @@ library:
   - yaml
   - text
   - aeson
+  - bytestring
 
 executables:
   fp2023-select-all:
@@ -88,6 +89,7 @@ executables:
     - yaml
     - text
     - aeson
+    - bytestring
 
 tests:
   fp2023-test:
@@ -102,3 +104,4 @@ tests:
     - hspec
     - free
     - time
+    - bytestring
