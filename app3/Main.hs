@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 module Main (main) where
 
 import Control.Monad.IO.Class (MonadIO (liftIO))
@@ -88,12 +87,24 @@ runExecuteIO (Free step) = do
           return next
     runStep (Lib3.GenerateDataFrame columns rows next) =
       return $ next (DataFrame columns rows)
-    runStep (Lib3.ShowTablesFunction tables next) = do
-      let column = Column "tableName" StringType
-          rows = map (\name -> [StringValue name]) tables
-      let df = DataFrame [column] rows
-      return (next df)
-    
+    runStep (Lib3.ShowTableFunction (DataFrame.DataFrame columns _) next) = do
 
+      let newDf = DataFrame.DataFrame [DataFrame.Column "ColumnNames" DataFrame.StringType] 
+                                      (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))
+  
+      return $ next newDf
+  
+    columnName :: DataFrame.Column -> String
+    columnName (DataFrame.Column name _) = name
+
+    formatRow :: [DataFrame.Value] -> String 
+    formatRow row = "[" ++ (intercalate "],[" $ map valueToString row) ++ "]"
+    
+    valueToString :: DataFrame.Value -> String
+    valueToString (DataFrame.IntegerValue i) = show i
+    valueToString (DataFrame.StringValue s) = "\"" ++ s ++ "\""
+    valueToString (DataFrame.BoolValue b) = show b
+    valueToString DataFrame.NullValue = "NULL"
+    
     getTableFilePath :: String -> String
     getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
