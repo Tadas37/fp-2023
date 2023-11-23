@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 module Main (main) where
 
 import Control.Monad.IO.Class (MonadIO (liftIO))
@@ -87,6 +88,12 @@ runExecuteIO (Free step) = do
           return next
     runStep (Lib3.GenerateDataFrame columns rows next) =
       return $ next (DataFrame columns rows)
+    runStep (Lib3.ShowTablesFunction tables next) = do
+      let column = Column "tableName" StringType
+          rows = map (\name -> [StringValue name]) tables
+      let df = DataFrame [column] rows
+      return (next df)
+    
 
     getTableFilePath :: String -> String
     getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
