@@ -1,14 +1,16 @@
 module Main (main) where
 
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Control.Monad.Free (Free (..))
-
+import Control.Monad.Free (Free (..), liftF)
 import Data.Functor((<&>))
 import Data.Time ( UTCTime, getCurrentTime )
 import Data.List qualified as L
 import Lib1 qualified
 import Lib2 qualified
+import DataFrame
 import Lib3 qualified
+import Data.Either (partitionEithers)
+import Data.List (intercalate)
 import System.Console.Repline
   ( CompleterStyle (Word),
     ExitDecision (Exit),
@@ -62,7 +64,29 @@ runExecuteIO (Pure r) = return r
 runExecuteIO (Free step) = do
     next <- runStep step
     runExecuteIO next
-    where
-        -- probably you will want to extend the interpreter
-        runStep :: Lib3.ExecutionAlgebra a -> IO a
-        runStep (Lib3.GetTime next) = getCurrentTime >>= return . next
+  where
+    runStep :: Lib3.ExecutionAlgebra a -> IO a
+    runStep (Lib3.GetTime next) = getCurrentTime >>= return . next
+    runStep (Lib3.LoadFiles tableNames next) = do
+        fileContents <- mapM (readFile . getTableFilePath) tableNames
+        return $ next fileContents
+    runStep (Lib3.ParseTables contents next) = do
+        let parsedTables = map Lib3.parseYAMLContent contents
+        let (errors, tables) = partitionEithers parsedTables
+        if null errors
+            then return $ next tables
+            else error $ "YAML parsing errors: " ++ intercalate "; " errors
+    runStep (Lib3.GetTableDfByName tableName tables next) =
+        case lookup tableName tables of
+            Just df -> return $ next df
+            Nothing -> error $ "Table not found: " ++ tableName
+    runStep (Lib3.UpdateTable (tableName, df) next) = do
+          let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
+          let yamlContent = Lib3.serializeTableToYAML serializedTable
+          writeFile (getTableFilePath tableName) yamlContent
+          return next
+    runStep (Lib3.GenerateDataFrame columns rows next) =
+      return $ next (DataFrame columns rows)
+
+    getTableFilePath :: String -> String
+    getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"

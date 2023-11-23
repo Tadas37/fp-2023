@@ -2,25 +2,59 @@
 
 module Lib3
   ( executeSql,
+    parseTables,
     Execution,
     ExecutionAlgebra(..),
     loadFiles,
     getTime,
+    parseYAMLContent,
+    getTableDfByName,
+    dataFrameToSerializedTable,
+    serializeTableToYAML,
   )
 where
 
 import Control.Monad.Free (Free (..), liftF)
-import DataFrame (Column(..), DataFrame(..), Row, ColumnType (IntegerType, StringType))
+
+import DataFrame (Column(..), ColumnType(..), Value(..), Row, DataFrame(..))
+import Data.Yaml (decodeEither')
+import Data.Text.Encoding as TE
+import Data.Text as T
+import Data.List
+import qualified Data.Yaml as Y
+import Data.Char (toLower)
 import Data.Time (UTCTime)
-import Data.List (isPrefixOf, isSuffixOf)
-import Data.Char (isDigit)
-import Data.Maybe (isNothing, isJust)
+import qualified Data.Aeson.Key as Key
+import qualified Data.ByteString.Char8 as BS
+
 type TableName = String
 type FileContent = String
 type ErrorMessage = String
 type SQLQuery = String
 type ColumnName = String
 
+data SerializedTable = SerializedTable
+  { tableName :: TableName
+  , columns   :: [SerializedColumn]
+  , rows      :: [[Y.Value]]
+  }
+
+data SerializedColumn = SerializedColumn
+  { name     :: String
+  , dataType :: String
+  }
+
+instance Y.FromJSON SerializedTable where
+  parseJSON = Y.withObject "SerializedTable" $ \v -> SerializedTable
+    <$> v Y..: Key.fromString "tableName"
+    <*> v Y..: Key.fromString "columns"
+    <*> v Y..: Key.fromString "rows"
+
+instance Y.FromJSON SerializedColumn where
+  parseJSON = Y.withObject "SerializedColumn" $ \v -> SerializedColumn
+    <$> v Y..: Key.fromString "name"
+    <*> v Y..: Key.fromString "dataType"
+  
 data SelectColumn
   = Now
   | TableColumn TableName ColumnName
@@ -62,8 +96,8 @@ data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables 
 
 data ExecutionAlgebra next
   = LoadFiles [TableName] ([FileContent] -> next)
-  | GetTableDfByName TableName [(TableName, DataFrame)] (DataFrame -> next)
   | ParseTables [FileContent] ([(TableName, DataFrame)] -> next)
+  | GetTableDfByName TableName [(TableName, DataFrame)] (DataFrame -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
   | GetStatementType SQLQuery (StatementType -> next)
@@ -79,7 +113,6 @@ data ExecutionAlgebra next
   | ShowTablesFunction [TableName] (DataFrame -> next)
   | ShowTableFunction DataFrame (DataFrame -> next)
   | GetNotSelectTableName ParsedStatement (TableName -> next)
-
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
@@ -87,11 +120,11 @@ type Execution = Free ExecutionAlgebra
 loadFiles :: [TableName] -> Execution [FileContent]
 loadFiles names = liftF $ LoadFiles names id
 
-getTableDfByName :: TableName -> [(TableName, DataFrame)] -> Execution DataFrame
-getTableDfByName tableName tables = liftF $ GetTableDfByName tableName tables id
-
 parseTables :: [FileContent] -> Execution [(TableName, DataFrame)]
 parseTables content = liftF $ ParseTables content id
+
+getTableDfByName :: TableName -> [(TableName, DataFrame)] -> Execution DataFrame
+getTableDfByName tableName tables = liftF $ GetTableDfByName tableName tables id
 
 updateTable :: (TableName, DataFrame) -> Execution ()
 updateTable table = liftF $ UpdateTable table ()
@@ -142,16 +175,16 @@ executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
 executeSql statement = do
   parsedStatement <- parseSql statement
 
-  tableNames    <- getTableNames parsedStatement
-  tableFiles    <- loadFiles tableNames
-  tables        <- parseTables tableFiles
-  isValid       <- isParsedStatementValid parsedStatement tables
+  tableNames <- getTableNames parsedStatement
+  tableFiles <- loadFiles tableNames
+  tables <- parseTables tableFiles
   statementType <- getStatementType statement
   timeStamp     <- getTime
+  isValid <- isParsedStatementValid parsedStatement tables
 
   if not isValid
     then return $ Left "err"
-  else
+    else
     case statementType of
       Select -> do
         columns     <- getSelectedColumns parsedStatement tables
@@ -180,3 +213,85 @@ executeSql statement = do
         return $ Right allTables
       InvalidStatement -> do
         return $ Left "Invalid statement"
+
+
+parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
+parseYAMLContent content = 
+  case decodeEither' (BS.pack content) of
+    Left err -> Left $ "YAML parsing error: " ++ show err
+    Right serializedTable -> Right $ convertToDataFrame serializedTable
+
+convertToDataFrame :: SerializedTable -> (TableName, DataFrame)
+convertToDataFrame st = (tableName st, DataFrame (Prelude.map convertColumn $ columns st) (convertRows $ rows st))
+
+convertColumn :: SerializedColumn -> Column
+convertColumn sc = Column (name sc) (convertColumnType $ dataType sc)
+
+convertColumnType :: String -> ColumnType
+convertColumnType dt = case dt of
+    "integer" -> IntegerType
+    "string" -> StringType
+    "boolean" -> BoolType
+    _ -> error "Unknown column type"
+
+convertRows :: [[Y.Value]] -> [Row]
+convertRows = Prelude.map (Prelude.map convertValue)
+
+convertValue :: Y.Value -> DataFrame.Value
+convertValue val = case val of
+    Y.String s -> DataFrame.StringValue (T.unpack s)
+    Y.Number n -> DataFrame.IntegerValue (round n) 
+    Y.Bool b -> DataFrame.BoolValue b
+    Y.Null -> DataFrame.NullValue
+    _ -> error "Unsupported value type"
+
+serializeTableToYAML :: SerializedTable -> String
+serializeTableToYAML st =
+    "tableName: " ++ tableName st ++ "\n" ++
+    "columns:\n" ++ Prelude.concatMap serializeColumn (columns st) ++
+    "rows:\n" ++ Prelude.concatMap serializeRow (rows st)
+  where
+    serializeColumn :: SerializedColumn -> String
+    serializeColumn col =
+        "- name: " ++ name col ++ "\n" ++
+        "  dataType: " ++ dataType col ++ "\n"
+
+    serializeRow :: [Y.Value] -> String
+    serializeRow row = "- [" ++ Data.List.intercalate ", " (Prelude.map serializeValue row) ++ "]\n"
+
+    serializeValue :: Y.Value -> String
+    serializeValue val =
+        case val of
+            Y.String s -> T.unpack s 
+            Y.Number n -> show (round n :: Int)
+            Y.Bool b   -> Prelude.map Data.Char.toLower (show b)
+            Y.Null     -> "null"
+
+dataFrameToSerializedTable :: (TableName, DataFrame) -> SerializedTable
+dataFrameToSerializedTable (tblName, DataFrame columns rows) =
+    SerializedTable {
+        tableName = tblName,
+        columns = Prelude.map convertColumn columns,
+        rows = Prelude.map convertRow rows
+    }
+  where
+    convertColumn :: Column -> SerializedColumn
+    convertColumn (Column name columnType) =
+        SerializedColumn {
+            name = name,
+            dataType = convertColumnType columnType
+        }
+
+    convertColumnType :: ColumnType -> String
+    convertColumnType IntegerType = "integer"
+    convertColumnType StringType = "string"
+    convertColumnType BoolType = "boolean"
+
+    convertRow :: Row -> [Y.Value]
+    convertRow = Prelude.map convertValue
+
+    convertValue :: Value -> Y.Value
+    convertValue (IntegerValue n) = Y.Number (fromIntegral n)
+    convertValue (StringValue s) = Y.String (T.pack s)
+    convertValue (BoolValue b) = Y.Bool b
+    convertValue NullValue = Y.Null
