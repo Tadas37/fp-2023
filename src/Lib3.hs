@@ -8,6 +8,7 @@ module Lib3
     loadFiles,
     getTime,
     parseYAMLContent,
+    getTableDfByName,
   )
 where
 
@@ -50,7 +51,6 @@ instance Y.FromJSON SerializedColumn where
     <$> v Y..: Key.fromString "name"
     <*> v Y..: Key.fromString "dataType"
   
-
 data SelectColumn
   = Now
   | TableColumn TableName ColumnName
@@ -109,7 +109,6 @@ data ExecutionAlgebra next
   | ShowTablesFunction [TableName] (DataFrame -> next)
   | ShowTableFunction DataFrame (DataFrame -> next)
   | GetNotSelectTableName ParsedStatement (TableName -> next)
-
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
@@ -172,7 +171,6 @@ executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
 executeSql statement = do
   parsedStatement <- parseSql statement
 
-
   tableNames <- getTableNames parsedStatement
   tableFiles <- loadFiles tableNames
   tables <- parseTables tableFiles
@@ -180,10 +178,9 @@ executeSql statement = do
   timeStamp     <- getTime
   isValid <- isParsedStatementValid parsedStatement tables
 
-
   if not isValid
     then return $ Left "err"
-  else
+    else
     case statementType of
       Select -> do
         columns     <- getSelectedColumns parsedStatement tables
