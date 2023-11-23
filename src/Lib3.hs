@@ -9,6 +9,8 @@ module Lib3
     getTime,
     parseYAMLContent,
     getTableDfByName,
+    dataFrameToSerializedTable,
+    serializeTableToYAML,
   )
 where
 
@@ -17,6 +19,7 @@ import DataFrame (Column(..), ColumnType(..), Value(..), Row, DataFrame(..))
 import Data.Yaml (decodeEither')
 import Data.Text.Encoding as TE
 import Data.Text as T
+import Data.List
 import qualified Data.Yaml as Y
 import Data.Char (toLower)
 import Data.Time (UTCTime)
@@ -237,3 +240,54 @@ convertValue val = case val of
     Y.Bool b -> DataFrame.BoolValue b
     Y.Null -> DataFrame.NullValue
     _ -> error "Unsupported value type"
+
+serializeTableToYAML :: SerializedTable -> String
+serializeTableToYAML st =
+    "tableName: " ++ tableName st ++ "\n" ++
+    "columns:\n" ++ Prelude.concatMap serializeColumn (columns st) ++
+    "rows:\n" ++ Prelude.concatMap serializeRow (rows st)
+  where
+    serializeColumn :: SerializedColumn -> String
+    serializeColumn col =
+        "- name: " ++ name col ++ "\n" ++
+        "  dataType: " ++ dataType col ++ "\n"
+
+    serializeRow :: [Y.Value] -> String
+    serializeRow row = "- [" ++ Data.List.intercalate ", " (Prelude.map serializeValue row) ++ "]\n"
+
+    serializeValue :: Y.Value -> String
+    serializeValue val =
+        case val of
+            Y.String s -> T.unpack s 
+            Y.Number n -> show (round n :: Int)
+            Y.Bool b   -> Prelude.map Data.Char.toLower (show b)
+            Y.Null     -> "null"
+
+dataFrameToSerializedTable :: (TableName, DataFrame) -> SerializedTable
+dataFrameToSerializedTable (tblName, DataFrame columns rows) =
+    SerializedTable {
+        tableName = tblName,
+        columns = Prelude.map convertColumn columns,
+        rows = Prelude.map convertRow rows
+    }
+  where
+    convertColumn :: Column -> SerializedColumn
+    convertColumn (Column name columnType) =
+        SerializedColumn {
+            name = name,
+            dataType = convertColumnType columnType
+        }
+
+    convertColumnType :: ColumnType -> String
+    convertColumnType IntegerType = "integer"
+    convertColumnType StringType = "string"
+    convertColumnType BoolType = "boolean"
+
+    convertRow :: Row -> [Y.Value]
+    convertRow = Prelude.map convertValue
+
+    convertValue :: Value -> Y.Value
+    convertValue (IntegerValue n) = Y.Number (fromIntegral n)
+    convertValue (StringValue s) = Y.String (T.pack s)
+    convertValue (BoolValue b) = Y.Bool b
+    convertValue NullValue = Y.Null

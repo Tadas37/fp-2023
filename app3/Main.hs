@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Control.Monad.Free (Free (..))
+import Control.Monad.Free (Free (..), liftF)
 import Data.Functor((<&>))
 import Data.Time ( UTCTime, getCurrentTime )
 import Data.List qualified as L
@@ -79,7 +79,11 @@ runExecuteIO (Free step) = do
         case lookup tableName tables of
             Just df -> return $ next df
             Nothing -> error $ "Table not found: " ++ tableName
-    runStep _ = error "Unsupported operation"
+    runStep (Lib3.UpdateTable (tableName, df) next) = do
+          let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
+          let yamlContent = Lib3.serializeTableToYAML serializedTable
+          writeFile (getTableFilePath tableName) yamlContent
+          return next
 
     getTableFilePath :: String -> String
     getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
