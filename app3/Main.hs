@@ -7,6 +7,7 @@ import Data.Time ( UTCTime, getCurrentTime )
 import Data.List qualified as L
 import Lib1 qualified
 import Lib2 qualified
+import DataFrame
 import Lib3 qualified
 import Data.Either (partitionEithers)
 import Data.List (intercalate)
@@ -84,6 +85,8 @@ runExecuteIO (Free step) = do
           let yamlContent = Lib3.serializeTableToYAML serializedTable
           writeFile (getTableFilePath tableName) yamlContent
           return next
+    runStep (Lib3.GenerateDataFrame columns rows next) =
+      return $ next (DataFrame columns rows)
 
     getTableFilePath :: String -> String
     getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
