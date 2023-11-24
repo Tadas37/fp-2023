@@ -119,15 +119,6 @@ runExecuteIO (Free step) = do
              
     columnName (DataFrame.Column name _) = name
     
-    formatRow :: [DataFrame.Value] -> String 
-    formatRow row = "[" ++ (intercalate "],[" $ map valueToString row) ++ "]"
-    
-    valueToString :: DataFrame.Value -> String
-    valueToString (DataFrame.IntegerValue i) = show i
-    valueToString (DataFrame.StringValue s) = "\"" ++ s ++ "\""
-    valueToString (DataFrame.BoolValue b) = show b
-    valueToString DataFrame.NullValue = "NULL"
-    
     getTableFilePath :: String -> String
     getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
     
