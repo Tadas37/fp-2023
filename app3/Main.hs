@@ -1,5 +1,7 @@
 module Main (main) where
 
+import Data.List (find)
+import Data.Maybe (mapMaybe)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Free (Free (..), liftF)
 import Data.Functor((<&>))
@@ -105,13 +107,16 @@ runExecuteIO (Free step) = do
     
         dfRows :: DataFrame -> [Row]
         dfRows (DataFrame _ rows) = rows
-        
+    runStep (Lib3.ShowTablesFunction tables next) = do
+      let column = Column "tableName" StringType
+          rows = map (\name -> [StringValue name]) tables
+      let df = DataFrame [column] rows
+      return (next df)
     runStep (Lib3.ShowTableFunction (DataFrame.DataFrame columns _) next) = do
         let newDf = DataFrame.DataFrame [DataFrame.Column "ColumnNames" DataFrame.StringType] 
                                         (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))
         return $ next newDf
-    
-    columnName :: DataFrame.Column -> String
+             
     columnName (DataFrame.Column name _) = name
     
     formatRow :: [DataFrame.Value] -> String 
