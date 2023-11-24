@@ -94,6 +94,18 @@ runExecuteIO (Free step) = do
         return next
     runStep (Lib3.GenerateDataFrame columns rows next) =
         return $ next (DataFrame columns rows)
+    runStep (Lib3.GetReturnTableRows parsedStatement tables timeStamp next) = do
+      let rows = case parsedStatement of
+            Lib3.SelectAll _ _ -> extractAllRows tables
+            _ -> error "Unhandled statement type in GetReturnTableRows"
+      return $ next rows
+      where
+        extractAllRows :: [(Lib3.TableName, DataFrame)] -> [Row]
+        extractAllRows tbls = concatMap (dfRows . snd) tbls
+    
+        dfRows :: DataFrame -> [Row]
+        dfRows (DataFrame _ rows) = rows
+        
     runStep (Lib3.ShowTableFunction (DataFrame.DataFrame columns _) next) = do
         let newDf = DataFrame.DataFrame [DataFrame.Column "ColumnNames" DataFrame.StringType] 
                                         (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))

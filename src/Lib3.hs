@@ -6,6 +6,8 @@ module Lib3
     Execution,
     ExecutionAlgebra(..),
     ParsedStatement(..),
+    SelectColumn(..),
+    TableName,
     loadFiles,
     getTime,
     parseYAMLContent,
