@@ -15,6 +15,7 @@ module Lib3
 where
 
 import Control.Monad.Free (Free (..), liftF)
+
 import DataFrame (Column(..), ColumnType(..), Value(..), Row, DataFrame(..))
 import Data.Yaml (decodeEither')
 import Data.Text.Encoding as TE
@@ -78,12 +79,12 @@ data WhereClause
   deriving (Show, Eq)
 
 data Condition
-  = Equals String ConditionValue
-  | GreaterThan String ConditionValue
-  | LessThan String ConditionValue
-  | LessthanOrEqual String ConditionValue
-  | GreaterThanOrEqual String ConditionValue
-  | NotEqual String ConditionValue
+  = Equals SelectColumn ConditionValue
+  | GreaterThan SelectColumn ConditionValue
+  | LessThan SelectColumn ConditionValue
+  | LessthanOrEqual SelectColumn ConditionValue
+  | GreaterThanOrEqual SelectColumn ConditionValue
+  | NotEqual SelectColumn ConditionValue
   deriving (Show, Eq)
 
 data ConditionValue
@@ -91,7 +92,7 @@ data ConditionValue
   | IntValue Integer
   deriving (Show, Eq)
 
-data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables
+data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables | InvalidStatement
 
 data ExecutionAlgebra next
   = LoadFiles [TableName] ([FileContent] -> next)
@@ -165,7 +166,7 @@ showTablesFunction :: [TableName] -> Execution DataFrame
 showTablesFunction tables = liftF $ ShowTablesFunction tables id
 
 showTableFunction :: DataFrame -> Execution DataFrame
-showTableFunction table = liftF $ ShowTableFunction table id 
+showTableFunction table = liftF $ ShowTableFunction table id
 
 getNonSelectTableName :: ParsedStatement -> Execution TableName
 getNonSelectTableName statement = liftF $ GetNotSelectTableName statement id
@@ -210,6 +211,9 @@ executeSql statement = do
         df          <- getTableDfByName nonSelectTableName tables
         allTables   <- showTableFunction df
         return $ Right allTables
+      InvalidStatement -> do
+        return $ Left "Invalid statement"
+
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content = 
