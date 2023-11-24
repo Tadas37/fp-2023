@@ -80,23 +80,28 @@ runExecuteIO (Free step) = do
         case lookup tableName tables of
             Just df -> return $ next df
             Nothing -> error $ "Table not found: " ++ tableName
+    runStep (Lib3.GetNotSelectTableName statement next) =
+        case statement of
+            Lib3.DeleteStatement tableName _ -> return $ next tableName
+            Lib3.InsertStatement tableName _ _ -> return $ next tableName
+            Lib3.UpdateStatement tableName _ _ _ -> return $ next tableName
+            _ -> error "No table name for non-select statement"
+    
     runStep (Lib3.UpdateTable (tableName, df) next) = do
-          let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
-          let yamlContent = Lib3.serializeTableToYAML serializedTable
-          writeFile (getTableFilePath tableName) yamlContent
-          return next
+        let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
+        let yamlContent = Lib3.serializeTableToYAML serializedTable
+        writeFile (getTableFilePath tableName) yamlContent
+        return next
     runStep (Lib3.GenerateDataFrame columns rows next) =
-      return $ next (DataFrame columns rows)
+        return $ next (DataFrame columns rows)
     runStep (Lib3.ShowTableFunction (DataFrame.DataFrame columns _) next) = do
-
-      let newDf = DataFrame.DataFrame [DataFrame.Column "ColumnNames" DataFrame.StringType] 
-                                      (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))
-  
-      return $ next newDf
-  
+        let newDf = DataFrame.DataFrame [DataFrame.Column "ColumnNames" DataFrame.StringType] 
+                                        (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))
+        return $ next newDf
+    
     columnName :: DataFrame.Column -> String
     columnName (DataFrame.Column name _) = name
-
+    
     formatRow :: [DataFrame.Value] -> String 
     formatRow row = "[" ++ (intercalate "],[" $ map valueToString row) ++ "]"
     
@@ -108,3 +113,4 @@ runExecuteIO (Free step) = do
     
     getTableFilePath :: String -> String
     getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
+    

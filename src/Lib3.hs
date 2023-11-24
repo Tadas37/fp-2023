@@ -5,6 +5,7 @@ module Lib3
     parseTables,
     Execution,
     ExecutionAlgebra(..),
+    ParsedStatement(..),
     loadFiles,
     getTime,
     parseYAMLContent,
