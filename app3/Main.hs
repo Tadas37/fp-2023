@@ -116,18 +116,23 @@ runExecuteIO (Free step) = do
         let newDf = DataFrame.DataFrame [DataFrame.Column "ColumnNames" DataFrame.StringType] 
                                         (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))
         return $ next newDf
-             
-    columnName (DataFrame.Column name _) = name
-    
-    formatRow :: [DataFrame.Value] -> String 
-    formatRow row = "[" ++ (intercalate "],[" $ map valueToString row) ++ "]"
-    
-    valueToString :: DataFrame.Value -> String
-    valueToString (DataFrame.IntegerValue i) = show i
-    valueToString (DataFrame.StringValue s) = "\"" ++ s ++ "\""
-    valueToString (DataFrame.BoolValue b) = show b
-    valueToString DataFrame.NullValue = "NULL"
-    
+    runStep (Lib3.GetSelectedColumns parsedStatement tables next) = 
+      return $ next $ getSelectedColumns parsedStatement tables
+      where
+        getSelectedColumns :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
+        getSelectedColumns stmt tbls = case stmt of
+          Lib3.SelectColumns _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
+          _ -> []
+        findColumn :: [(Lib3.TableName, DataFrame)] -> Lib3.SelectColumn -> Maybe Column
+        findColumn tbls (Lib3.TableColumn tblName colName) = 
+          case lookup tblName tbls of
+            Just (DataFrame columns _) -> find (\(Column name _) -> name == colName) columns
+            Nothing -> Nothing
+        findColumn _ _ = Nothing
+                    
+    columnName :: DataFrame.Column -> String
+    columnName (DataFrame.Column name _) = name 
+
     getTableFilePath :: String -> String
     getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
     
