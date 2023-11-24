@@ -97,7 +97,6 @@ runExecuteIO (Free step) = do
         getTableNames (Lib3.DeleteStatement tableName _) = [tableName]
         getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
         getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
-        getTableNames _ = []  -- Add handling for other cases if needed
     
     runStep (Lib3.UpdateTable (tableName, df) next) = do
         let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
