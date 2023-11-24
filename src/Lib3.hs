@@ -104,9 +104,9 @@ data ExecutionAlgebra next
   | ParseSql SQLQuery (ParsedStatement -> next)
   | IsParsedStatementValid ParsedStatement [(TableName, DataFrame)] (Bool -> next)
   | GetTableNames ParsedStatement ([TableName] -> next)
-  | DeleteRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
-  | InsertRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
-  | UpdateRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
+  | DeleteRows ParsedStatement TableName [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
+  | InsertRows ParsedStatement TableName [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
+  | UpdateRows ParsedStatement TableName [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | GetSelectedColumns ParsedStatement [(TableName, DataFrame)] ([Column] -> next)
   | GetReturnTableRows ParsedStatement [(TableName, DataFrame)] UTCTime ([Row] -> next)
   | GenerateDataFrame [Column] [Row] (DataFrame -> next)
@@ -144,14 +144,14 @@ isParsedStatementValid statement tables = liftF $ IsParsedStatementValid stateme
 getTableNames :: ParsedStatement -> Execution [TableName]
 getTableNames statement = liftF $ GetTableNames statement id
 
-deleteRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
-deleteRows statement tables = liftF $ DeleteRows statement tables id
+deleteRows :: ParsedStatement -> TableName -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
+deleteRows statement table tables = liftF $ DeleteRows statement table tables id
 
-insertRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
-insertRows statement tables = liftF $ InsertRows statement tables id
+insertRows  :: ParsedStatement -> TableName -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
+insertRows statement table tables = liftF $ InsertRows statement table tables id
 
-updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
-updateRows statement tables = liftF $ UpdateRows statement tables id
+updateRows  :: ParsedStatement -> TableName -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
+updateRows statement table tables = liftF $ UpdateRows statement table tables id
 
 getSelectedColumns :: ParsedStatement -> [(TableName, DataFrame)] -> Execution [Column]
 getSelectedColumns statement tables = liftF $ GetSelectedColumns statement tables id
@@ -192,17 +192,20 @@ executeSql statement = do
         df          <- generateDataFrame columns rows
         return $ Right df
       Delete -> do
-        (name, df)  <- deleteRows parsedStatement tables
+        nonSelectTableName <- getNonSelectTableName parsedStatement
+        (name, df)  <- deleteRows parsedStatement nonSelectTableName tables
         updateTable (name, df)
         return $ Right df
       Insert -> do
-        (name, df)  <- insertRows parsedStatement tables
+        nonSelectTableName <- getNonSelectTableName parsedStatement
+        (name, df)  <- insertRows parsedStatement nonSelectTableName tables
         updateTable (name, df)
         return $ Right df
       Update -> do
-        (name, df)  <- updateRows parsedStatement tables
+        nonSelectTableName <- getNonSelectTableName parsedStatement
+        (name, df)  <- updateRows parsedStatement nonSelectTableName tables
         updateTable (name, df)
-        return $ Right df
+        return $ Right df      
       ShowTables -> do
         allTables   <- showTablesFunction tableNames
         return $ Right allTables
