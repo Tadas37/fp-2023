@@ -145,6 +145,9 @@ runExecuteIO (Free step) = do
                 Just (DataFrame columns _) -> find (\(Column name _) -> name == colName) columns
                 Nothing -> Nothing
         findColumn _ _ = Nothing
+    runStep (Lib3.IsParsedStatementValid parsedStatement tables next) = do
+      let isValid = Lib3.validateStatement parsedStatement tables
+      return $ next isValid
 
                     
     columnName :: DataFrame.Column -> String

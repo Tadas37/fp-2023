@@ -14,6 +14,7 @@ module Lib3
     getTableDfByName,
     dataFrameToSerializedTable,
     serializeTableToYAML,
+    validateStatement,
   )
 where
 
@@ -142,7 +143,7 @@ parseSql :: SQLQuery -> Execution ParsedStatement
 parseSql query = liftF $ ParseSql query id
 
 isParsedStatementValid :: ParsedStatement -> [(TableName, DataFrame)] -> Execution Bool
-isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables id
+isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables (\_ -> validateStatement statement tables)
 
 getTableNames :: ParsedStatement -> Execution [TableName]
 getTableNames statement = liftF $ GetTableNames statement id
@@ -298,3 +299,25 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
     convertValue (StringValue s) = Y.String (T.pack s)
     convertValue (BoolValue b) = Y.Bool b
     convertValue NullValue = Y.Null
+
+validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> Bool
+validateStatement stmt tables = case stmt of
+  SelectAll tableNames _ -> Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames
+  SelectColumns tableNames cols _ -> validateTableAndColumns tableNames cols tables
+  InsertStatement tableName cols _ -> validateTableAndColumns [tableName] cols tables
+  UpdateStatement tableName cols _ _ -> validateTableAndColumns [tableName] cols tables
+  DeleteStatement tableName _ -> tableName `Data.List.elem` Data.List.map fst tables
+  _ -> True  
+
+validateTableAndColumns :: [TableName] -> [SelectColumn] -> [(TableName, DataFrame)] -> Bool
+validateTableAndColumns tableNames cols tables = Data.List.all tableAndColumnsExist tableNames
+  where
+    tableAndColumnsExist tableName = maybe False (columnsExistInTable cols) (lookup tableName tables)
+
+    columnsExistInTable :: [SelectColumn] -> DataFrame -> Bool
+    columnsExistInTable columns df = Data.List.all (`columnExistsInDataFrame` df) columns
+
+    columnExistsInDataFrame :: SelectColumn -> DataFrame -> Bool
+    columnExistsInDataFrame (TableColumn _ colName) (DataFrame cols _) = 
+      Data.List.any (\(Column name _) -> name == colName) cols
+    columnExistsInDataFrame _ _ = True
