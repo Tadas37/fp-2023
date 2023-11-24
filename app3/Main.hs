@@ -88,6 +88,16 @@ runExecuteIO (Free step) = do
             Lib3.InsertStatement tableName _ _ -> return $ next tableName
             Lib3.UpdateStatement tableName _ _ _ -> return $ next tableName
             _ -> error "No table name for non-select statement"
+    runStep (Lib3.GetTableNames parsedStatement next) = return $ next $ getTableNames parsedStatement
+      where
+        getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
+        getTableNames (Lib3.SelectAll tableNames _) = tableNames
+        getTableNames (Lib3.SelectAggregate tableNames _ _) = tableNames
+        getTableNames (Lib3.SelectColumns tableNames _ _) = tableNames
+        getTableNames (Lib3.DeleteStatement tableName _) = [tableName]
+        getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
+        getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
+        getTableNames _ = []  -- Add handling for other cases if needed
     
     runStep (Lib3.UpdateTable (tableName, df) next) = do
         let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
