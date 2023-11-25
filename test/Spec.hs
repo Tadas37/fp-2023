@@ -4,7 +4,23 @@ import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..))
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
+import Lib3(parseYAMLContent)
 import Test.Hspec
+
+validYAMLContent :: String
+validYAMLContent = 
+  "tableName: employees\n" ++
+  "columns:\n" ++
+  "  - name: id\n" ++
+  "    dataType: integer\n" ++
+  "  - name: name\n" ++
+  "    dataType: string\n" ++
+  "  - name: surname\n" ++
+  "    dataType: string\n" ++
+  "rows:\n" ++
+  "  - [1, \"Vi\", \"Po\"]\n" ++
+  "  - [2, \"Ed\", \"Dl\"]"
+
 
 main :: IO ()
 main = hspec $ do
@@ -186,3 +202,12 @@ main = hspec $ do
     it "should return an error for a non-existent column in SELECT" $ do
       let parsed = SelectColumns "employees" ["id", "nonexistent_column"] Nothing
       executeStatement parsed `shouldBe` Left "One or more columns not found in table employees"
+  describe "Lib3.parseYAMLContent" $ do
+    it "correctly parses valid YAML content into a DataFrame" $ do
+      let result = parseYAMLContent validYAMLContent
+      result `shouldSatisfy` isRight
+      let (Right (tableName, DataFrame columns rows)) = result
+      tableName `shouldBe` "employees"
+      length columns `shouldBe` 3  -- Checking the number of columns
+      length rows `shouldBe` 2     -- Checking the number of rows
+      -- Optionally, you can add more specific checks for the content of columns and rows
