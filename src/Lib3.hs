@@ -63,7 +63,7 @@ data SelectColumn
   deriving (Show, Eq)
 
 type SelectedColumns = [SelectColumn]
-type SelectedTables = [(TableName, String)]
+type SelectedTables = [TableName]
 
 data ParsedStatement
   = SelectAll SelectedTables (Maybe WhereClause)
