@@ -85,8 +85,29 @@ runExecuteIO (Free step) = do
           let yamlContent = Lib3.serializeTableToYAML serializedTable
           writeFile (getTableFilePath tableName) yamlContent
           return next
-    runStep (Lib3.GenerateDataFrame columns rows next) =
-      return $ next (DataFrame columns rows)
+    runStep (Lib3.DeleteRows (Lib3.DeleteStatement tableName whereClause) tables next) = do
+      case lookup tableName tables of
+          Just df -> do
+              let updatedDf = Lib3.filterRows df whereClause
+              case updatedDf of
+                  Right dfFiltered -> 
+                      runStep (Lib3.UpdateTable (tableName, dfFiltered) (next (tableName, dfFiltered)))
+                  Left errMsg -> 
+                      error errMsg
+          Nothing -> error $ "Table not found: " ++ tableName
+    runStep (Lib3.InsertRows (Lib3.InsertStatement tableName maybeSelectedColumns values) tables next) = do
+      case lookup tableName tables of
+          Just (DataFrame cols tableRows) -> do
+              let columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
+              let newRow = Lib3.createRowFromValues columnNames cols values
+              case newRow of
+                  Right row -> do
+                      let updatedDf = DataFrame cols (tableRows ++ [row])
+                      runStep (Lib3.UpdateTable (tableName, updatedDf) (next (tableName, updatedDf)))
+                  Left errMsg -> 
+                      error errMsg
+          Nothing -> error $ "Table not found: " ++ tableName
+
 
     getTableFilePath :: String -> String
     getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
