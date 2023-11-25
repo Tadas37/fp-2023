@@ -4,8 +4,19 @@ import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..))
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
-import Lib3(parseYAMLContent)
+import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..))
 import Test.Hspec
+
+sampleDataFrame :: DataFrame
+sampleDataFrame = DataFrame
+  [ Column "id" IntegerType
+  , Column "name" StringType
+  , Column "active" BoolType
+  ]
+  [ [IntegerValue 1, StringValue "Alice", BoolValue True]
+  , [IntegerValue 2, StringValue "Bob", BoolValue False]
+  ]
+
 
 validYAMLContent :: String
 validYAMLContent = 
@@ -208,6 +219,29 @@ main = hspec $ do
       result `shouldSatisfy` isRight
       let (Right (tableName, DataFrame columns rows)) = result
       tableName `shouldBe` "employees"
-      length columns `shouldBe` 3  -- Checking the number of columns
-      length rows `shouldBe` 2     -- Checking the number of rows
-      -- Optionally, you can add more specific checks for the content of columns and rows
+      length columns `shouldBe` 3 
+      length rows `shouldBe` 2    
+  describe "Lib3.dataFrameToSerializedTable" $ do
+    it "correctly converts a DataFrame to a SerializedTable" $ do
+      let serializedTable = dataFrameToSerializedTable ("employees", sampleDataFrame)
+      let SerializedTable {tableName = tn, columns = cols, rows = rws} = serializedTable
+      tn `shouldBe` "employees"
+      length cols `shouldBe` 3
+      length rws `shouldBe` 2
+
+  describe "Lib3.serializeTableToYAML" $ do
+    it "correctly serializes a SerializedTable to a YAML string" $ do
+      let serializedTable = dataFrameToSerializedTable ("employees", sampleDataFrame)
+      let yamlString = serializeTableToYAML serializedTable
+      yamlString `shouldContain` "tableName: employees"
+      yamlString `shouldContain` "name: id"
+      yamlString `shouldContain` "dataType: integer"
+      yamlString `shouldContain` "name: name"
+      yamlString `shouldContain` "dataType: string"
+      yamlString `shouldContain` "name: active"
+      yamlString `shouldContain` "dataType: boolean"
+      yamlString `shouldContain` "- [1, Alice, true]"
+      yamlString `shouldContain` "- [2, Bob, false]"
+
+
+  

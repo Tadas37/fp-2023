@@ -15,6 +15,7 @@ module Lib3
     dataFrameToSerializedTable,
     serializeTableToYAML,
     validateStatement,
+    SerializedTable(..),
   )
 where
 
