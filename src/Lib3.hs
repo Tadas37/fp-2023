@@ -58,6 +58,8 @@ instance Y.FromJSON SerializedColumn where
 data SelectColumn
   = Now
   | TableColumn TableName ColumnName
+  | Max TableName ColumnName
+  | Avg TableName ColumnName
   deriving (Show, Eq)
 
 type SelectedColumns = [SelectColumn]
@@ -70,6 +72,8 @@ data ParsedStatement
   | DeleteStatement TableName (Maybe WhereClause)
   | InsertStatement TableName SelectedColumns Row
   | UpdateStatement TableName SelectedColumns Row (Maybe WhereClause)
+  | ShowTableStatement TableName
+  | ShowTablesStatement
   | Invalid ErrorMessage
   deriving (Show, Eq)
 
@@ -91,6 +95,8 @@ data ConditionValue
   = StrValue String
   | IntValue Integer
   deriving (Show, Eq)
+
+data SelectType = Aggregate | ColumnsAndTime | AllColumns
 
 data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables | InvalidStatement
 
