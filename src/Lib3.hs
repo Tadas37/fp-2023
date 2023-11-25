@@ -16,6 +16,7 @@ module Lib3
     serializeTableToYAML,
     validateStatement,
     SerializedTable(..),
+    getSelectedColumnsFunction,
   )
 where
 
@@ -26,6 +27,7 @@ import Data.Yaml (decodeEither')
 import Data.Text.Encoding as TE
 import Data.Text as T
 import Data.List
+import Data.Maybe (mapMaybe)
 import qualified Data.Yaml as Y
 import Data.Char (toLower)
 import Data.Time (UTCTime)
@@ -322,3 +324,20 @@ validateTableAndColumns tableNames cols tables = Data.List.all tableAndColumnsEx
     columnExistsInDataFrame (TableColumn _ colName) (DataFrame cols _) = 
       Data.List.any (\(Column name _) -> name == colName) cols
     columnExistsInDataFrame _ _ = True
+
+getSelectedColumnsFunction :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
+getSelectedColumnsFunction stmt tbls = case stmt of
+    Lib3.SelectAll tableNames _ -> Data.List.concatMap (getTableColumns tbls) tableNames
+    Lib3.SelectColumns _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
+    _ -> []
+
+getTableColumns :: [(Lib3.TableName, DataFrame)] -> Lib3.TableName -> [Column]
+getTableColumns tbls tableName = case lookup tableName tbls of
+    Just (DataFrame columns _) -> columns
+    Nothing -> []
+
+findColumn :: [(Lib3.TableName, DataFrame)] -> Lib3.SelectColumn -> Maybe Column
+findColumn tbls (Lib3.TableColumn tblName colName) =
+    case lookup tblName tbls of
+        Just (DataFrame columns _) -> Data.List.find (\(Column name _) -> name == colName) columns
+        Nothing -> Nothing

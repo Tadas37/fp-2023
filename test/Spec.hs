@@ -4,8 +4,32 @@ import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..))
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
-import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..))
+import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumnsFunction, ParsedStatement(..), TableName, SelectColumn(..))
 import Test.Hspec
+
+columnName :: Column -> String
+columnName (Column name _) = name
+
+sampleDataFrame1 :: DataFrame
+sampleDataFrame1 = DataFrame
+  [ Column "id" IntegerType
+  , Column "name" StringType
+  ]
+  []
+
+sampleDataFrame2 :: DataFrame
+sampleDataFrame2 = DataFrame
+  [ Column "age" IntegerType
+  , Column "address" StringType
+  ]
+  []
+
+-- Sample database
+sampleDatabase :: [(Lib3.TableName, DataFrame)]
+sampleDatabase = 
+  [ ("employees", sampleDataFrame1)
+  , ("customers", sampleDataFrame2)
+  ]
 
 sampleDataFrame :: DataFrame
 sampleDataFrame = DataFrame
@@ -92,7 +116,7 @@ main = hspec $ do
       parseStatement "SHOW TABLE employees;" `shouldBe` Right (ShowTable "employees")
 
     it "should parse SELECT * FROM ..." $ do
-      parseStatement "SELECT * FROM employees;" `shouldBe` Right (SelectAll "employees" Nothing)
+      parseStatement "SELECT * FROM employees;" `shouldBe` Right (Lib2.SelectAll "employees" Nothing)
 
     it "should return an error for malformed statements" $ do
       parseStatement "SHOW employees;" `shouldBe` Left "Unsupported or invalid statement"
@@ -125,10 +149,10 @@ main = hspec $ do
 --      parseStatement "selEct MaX(flag) From flags wheRe value iS tRue;" `shouldBe` Right (MaxColumn "flags" "flag" (Just (IsValueBool True "flags" "value")))
 
     it "should parse 'SELECT column1 FROM employees;' correctly" $ do
-      parseStatement "SELECT id FROM employees;" `shouldBe` Right (SelectColumns "employees" ["id"] Nothing)
+      parseStatement "SELECT id FROM employees;" `shouldBe` Right (Lib2.SelectColumns "employees" ["id"] Nothing)
 
     it "should parse 'SELECT column1, column2 FROM employees;' correctly" $ do
-      parseStatement "SELECT id, name FROM employees;" `shouldBe` Right (SelectColumns "employees" ["id", "name"] Nothing)
+      parseStatement "SELECT id, name FROM employees;" `shouldBe` Right (Lib2.SelectColumns "employees" ["id", "name"] Nothing)
 
     it "should parse 'SELECT name, avg(id) FROM employees;' as bad statement" $ do
       parseStatement "SELECT name, avg(id) FROM employees;" `shouldBe` Left "Unsupported or invalid statement"
@@ -163,9 +187,9 @@ main = hspec $ do
   describe "parseStatement for select... with where and" $ do
     it "should parse correct select statements with where and" $ do
 --      parseStatement "select max(flag) from flags where flag < 'b';" `shouldBe` Right (MaxColumn "flags" "flag" (Just (Conditions [LessThan "flag" (StrValue "b")])))
-      parseStatement "select flag, value from flags where flag < 'c';" `shouldBe` Right (SelectColumns "flags" ["flag","value"] (Just (Conditions [LessThan "flag" (StrValue "c")])))
-      parseStatement "select flag, value from flags where flag < 'c' and flag > 'c' and flag < 'd';" `shouldBe` Right (SelectColumns "flags" ["flag","value"] (Just (Conditions [LessThan "flag" (StrValue "c"),GreaterThan "flag" (StrValue "c"),LessThan "flag" (StrValue "d")])))
-      parseStatement "selEct flag, value FRom flags wheRe flag < 'c' and flag > 'C' and flag = 'd';" `shouldBe` Right (SelectColumns "flags" ["flag","value"] (Just (Conditions [LessThan "flag" (StrValue "c"),GreaterThan "flag" (StrValue "C"),Equals "flag" (StrValue "d")])))
+      parseStatement "select flag, value from flags where flag < 'c';" `shouldBe` Right (Lib2.SelectColumns "flags" ["flag","value"] (Just (Conditions [LessThan "flag" (StrValue "c")])))
+      parseStatement "select flag, value from flags where flag < 'c' and flag > 'c' and flag < 'd';" `shouldBe` Right (Lib2.SelectColumns "flags" ["flag","value"] (Just (Conditions [LessThan "flag" (StrValue "c"),GreaterThan "flag" (StrValue "c"),LessThan "flag" (StrValue "d")])))
+      parseStatement "selEct flag, value FRom flags wheRe flag < 'c' and flag > 'C' and flag = 'd';" `shouldBe` Right (Lib2.SelectColumns "flags" ["flag","value"] (Just (Conditions [LessThan "flag" (StrValue "c"),GreaterThan "flag" (StrValue "C"),Equals "flag" (StrValue "d")])))
 
     it "shouldn't parse where and statements with mismatched and conditions e.g. int < string" $ do
       parseStatement "select value from flags where flag < 2;" `shouldBe` Left "Unsupported or invalid statement"
@@ -199,19 +223,19 @@ main = hspec $ do
 --      executeStatement parsed `shouldBe` Left "Column nonexistent_column not found in table employees"
 
     it "should return the 'id' column for 'SELECT id FROM employees;'" $ do
-      let parsed = SelectColumns "employees" ["id"] Nothing
+      let parsed = Lib2.SelectColumns "employees" ["id"] Nothing
       let expectedColumns = [Column "id" IntegerType]
       let expectedRows = [[IntegerValue 1], [IntegerValue 2]]
       executeStatement parsed `shouldBe` Right (DataFrame expectedColumns expectedRows)
 
     it "should return the 'id' and 'name' columns for 'SELECT id, name FROM employees;'" $ do
-      let parsed = SelectColumns "employees" ["id", "name"] Nothing
+      let parsed = Lib2.SelectColumns "employees" ["id", "name"] Nothing
       let expectedColumns = [Column "id" IntegerType, Column "name" StringType]
       let expectedRows = [[IntegerValue 1, StringValue "Vi"], [IntegerValue 2, StringValue "Ed"]]
       executeStatement parsed `shouldBe` Right (DataFrame expectedColumns expectedRows)
 
     it "should return an error for a non-existent column in SELECT" $ do
-      let parsed = SelectColumns "employees" ["id", "nonexistent_column"] Nothing
+      let parsed = Lib2.SelectColumns "employees" ["id", "nonexistent_column"] Nothing
       executeStatement parsed `shouldBe` Left "One or more columns not found in table employees"
   describe "Lib3.parseYAMLContent" $ do
     it "correctly parses valid YAML content into a DataFrame" $ do
@@ -242,6 +266,28 @@ main = hspec $ do
       yamlString `shouldContain` "dataType: boolean"
       yamlString `shouldContain` "- [1, Alice, true]"
       yamlString `shouldContain` "- [2, Bob, false]"
+
+  describe "getSelectedColumnsFunction" $ do
+    it "selects all columns for SelectAll statement" $ do
+      let stmt = Lib3.SelectAll ["employees"] Nothing
+      let selectedColumns = getSelectedColumnsFunction stmt sampleDatabase
+      length selectedColumns `shouldBe` 2
+
+    it "selects specified columns for SelectColumns statement" $ do
+      let stmt = Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "id"] Nothing
+      let selectedColumns = getSelectedColumnsFunction stmt sampleDatabase
+      length selectedColumns `shouldBe` 1
+      (columnName . head) selectedColumns `shouldBe` "id"
+
+    it "returns empty list for non-existent table" $ do
+      let stmt = Lib3.SelectAll ["nonexistent"] Nothing
+      let selectedColumns = getSelectedColumnsFunction stmt sampleDatabase
+      selectedColumns `shouldBe` []
+
+    it "returns empty list for non-existent columns" $ do
+      let stmt = Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "nonexistent"] Nothing
+      let selectedColumns = getSelectedColumnsFunction stmt sampleDatabase
+      selectedColumns `shouldBe` []
 
 
   

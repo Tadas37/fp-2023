@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 module Main (main) where
 
 import Data.List (find)
@@ -126,30 +127,12 @@ runExecuteIO (Free step) = do
                                         (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))
         return $ next newDf
     runStep (Lib3.GetSelectedColumns parsedStatement tables next) =
-        return $ next $ getSelectedColumns parsedStatement tables
-      where
-        getSelectedColumns :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
-        getSelectedColumns stmt tbls = case stmt of
-            Lib3.SelectAll tableNames _ -> concatMap (getTableColumns tbls) tableNames
-            Lib3.SelectColumns _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
-            _ -> []
-
-        getTableColumns :: [(Lib3.TableName, DataFrame)] -> Lib3.TableName -> [Column]
-        getTableColumns tbls tableName = case lookup tableName tbls of
-            Just (DataFrame columns _) -> columns
-            Nothing -> []
-
-        findColumn :: [(Lib3.TableName, DataFrame)] -> Lib3.SelectColumn -> Maybe Column
-        findColumn tbls (Lib3.TableColumn tblName colName) =
-            case lookup tblName tbls of
-                Just (DataFrame columns _) -> find (\(Column name _) -> name == colName) columns
-                Nothing -> Nothing
-        findColumn _ _ = Nothing
+        return $ next $ Lib3.getSelectedColumnsFunction parsedStatement tables
+        
     runStep (Lib3.IsParsedStatementValid parsedStatement tables next) = do
       let isValid = Lib3.validateStatement parsedStatement tables
       return $ next isValid
-
-                    
+          
     columnName :: DataFrame.Column -> String
     columnName (DataFrame.Column name _) = name 
 
