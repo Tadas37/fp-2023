@@ -30,7 +30,8 @@ import Data.Yaml (decodeEither')
 import Data.Text.Encoding as TE
 import Data.Text as T
 import Data.List
-import Data.Maybe 
+import Data.Maybe (mapMaybe)
+import Data.List
     ( map,
       elem,
       length,
@@ -45,8 +46,7 @@ import Data.Maybe
       last,
       intercalate,
       isPrefixOf,
-      isSuffixOf,
-      mapMaybe)
+      isSuffixOf)
 import qualified Data.Yaml as Y
 import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
