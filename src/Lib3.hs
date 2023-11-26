@@ -17,6 +17,7 @@ module Lib3
     validateStatement,
     SerializedTable(..),
     getSelectedColumnsFunction,
+    updateRowsInTable,
   )
 where
 
@@ -221,6 +222,24 @@ executeSql statement = do
       InvalidStatement -> do
         return $ Left "Invalid statement"
 
+updateRowsInTable :: ParsedStatement -> DataFrame -> DataFrame
+updateRowsInTable (UpdateStatement _ _ newRow maybeWhereClause) (DataFrame columns rows) =
+   DataFrame columns (Data.List.map (updateRowIfMatches newRow maybeWhereClause) rows)
+updateRowsInTable _ df = df
+
+updateRowIfMatches :: Row -> Maybe WhereClause -> Row -> Row
+updateRowIfMatches newRow (Just whereClause) row =
+    if rowMatchesWhereClause row whereClause
+    then newRow
+    else row
+updateRowIfMatches newRow Nothing _ = newRow
+
+rowMatchesWhereClause :: Row -> WhereClause -> Bool
+rowMatchesWhereClause row (IsValueBool b tableName columnName) = False
+rowMatchesWhereClause row (Conditions conditions) = Data.List.all (rowMatchesCondition row) conditions
+
+rowMatchesCondition :: Row -> Condition -> Bool
+rowMatchesCondition row (Equals (TableColumn _ columnName) (IntValue value)) = False
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content = 
