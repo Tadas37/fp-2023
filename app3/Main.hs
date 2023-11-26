@@ -153,10 +153,34 @@ runExecuteIO (Free step) = do
       case Lib3.parseStatement statement of
         Right parsedStatement -> return $ next parsedStatement
         Left error -> return $ next $ Lib3.Invalid error
-      
-    columnName :: DataFrame.Column -> String
-    columnName (DataFrame.Column name _) = name 
 
-    getTableFilePath :: String -> String
-    getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
+    runStep (Lib3.DeleteRows (Lib3.DeleteStatement tableName whereClause) tables next) = do
+      case lookup tableName tables of
+          Just df -> do
+              let updatedDf = Lib3.filterRows df whereClause
+              case updatedDf of
+                  Right dfFiltered -> 
+                      runStep (Lib3.UpdateTable (tableName, dfFiltered) (next (tableName, dfFiltered)))
+                  Left errMsg -> 
+                      error errMsg
+          Nothing -> error $ "Table not found: " ++ tableName
+    runStep (Lib3.InsertRows (Lib3.InsertStatement tableName maybeSelectedColumns row) tables next) = do
+        case lookup tableName tables of
+            Just (DataFrame cols tableRows) -> do
+                let columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
+                let insertValues = row 
+                let newRow = Lib3.createRowFromValues columnNames cols insertValues
+                case newRow of
+                    Right row -> do
+                        let updatedDf = DataFrame cols (tableRows ++ [row])
+                        runStep (Lib3.UpdateTable (tableName, updatedDf) (next (tableName, updatedDf)))
+                    Left errMsg -> 
+                        error errMsg
+            Nothing -> error $ "Table not found: " ++ tableName
+
+columnName :: DataFrame.Column -> String
+columnName (DataFrame.Column name _) = name 
+
+getTableFilePath :: String -> String
+getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
     

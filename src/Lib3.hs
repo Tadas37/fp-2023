@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Lib3
   ( executeSql,
@@ -19,7 +20,20 @@ module Lib3
     getSelectedColumnsFunction,
     updateRowsInTable,
     parseStatement,
-    ParsedStatement (..)
+    ParsedStatement (..),
+    filterRows,
+    filterDataFrame,
+    rowSatisfiesWhereClause,
+    conditionSatisfied,
+    compareWithCondition,
+    compareValue,
+    findColumnIndex,
+    createRowFromValues,
+    extractColumnNames,
+    ParsedStatement(..),
+    WhereClause(..),
+    Condition(..),
+    ConditionValue(..),
   )
 where
 
@@ -55,12 +69,15 @@ import qualified Data.ByteString.Char8 as BS
 import Data.Maybe (isJust, isNothing)
 import Data.Either (isRight, isLeft)
 import Prelude hiding (zip)
+import Data.Maybe
+import Text.Read (readMaybe)
 
 type TableName = String
 type FileContent = String
 type ErrorMessage = String
 type SQLQuery = String
 type ColumnName = String
+type InsertValue = String
 
 data SerializedTable = SerializedTable
   { tableName :: TableName
@@ -93,13 +110,14 @@ data SelectColumn
 
 type SelectedColumns = [SelectColumn]
 type SelectedTables = [TableName]
+type SelectedValues = [InsertValue]
 
 data ParsedStatement
   = SelectAll SelectedTables (Maybe WhereClause)
   | SelectAggregate SelectedTables SelectedColumns (Maybe WhereClause)
   | SelectColumns SelectedTables SelectedColumns (Maybe WhereClause)
   | DeleteStatement TableName (Maybe WhereClause)
-  | InsertStatement TableName SelectedColumns Row
+  | InsertStatement TableName (Maybe SelectedColumns) SelectedValues
   | UpdateStatement TableName SelectedColumns Row (Maybe WhereClause)
   | ShowTableStatement TableName
   | ShowTablesStatement
@@ -353,7 +371,8 @@ validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> Bool
 validateStatement stmt tables = case stmt of
   SelectAll tableNames _ -> Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames
   SelectColumns tableNames cols _ -> validateTableAndColumns tableNames cols tables
-  InsertStatement tableName cols _ -> validateTableAndColumns [tableName] cols tables
+  InsertStatement tableName maybeCols _ ->
+    validateTableAndColumns [tableName] (fromMaybe [] maybeCols) tables
   UpdateStatement tableName cols _ _ -> validateTableAndColumns [tableName] cols tables
   DeleteStatement tableName _ -> tableName `Data.List.elem` Data.List.map fst tables
   _ -> True  
@@ -456,7 +475,13 @@ getInsertColumns statement tableName = do
   getInsertStatement tableName columns columnValues
 
 getInsertStatement :: TableName -> [SelectColumn] -> [Value] -> Either ErrorMessage ParsedStatement
-getInsertStatement tableName columns values = Right $ InsertStatement tableName columns values
+getInsertStatement tableName columns values = Right $ InsertStatement tableName (Just columns) (Prelude.map valueToString values)
+
+valueToString :: Value -> String
+valueToString (IntegerValue i) = show i
+valueToString (StringValue s) = s
+valueToString (BoolValue b) = show b
+valueToString NullValue = "null"
 
 getInsertColumnValues :: [String] -> Either ErrorMessage [Value]
 getInsertColumnValues [value] = do
@@ -1069,3 +1094,118 @@ wordToLowerSensitive word
   | otherwise = word
   where
     keywords = ["select", "from", "where", "show", "table", "tables", "false", "true", "and", "is", "insert", "delete", "update", "set", "into"]
+
+filterRows :: DataFrame -> Maybe WhereClause -> Either String DataFrame
+filterRows df@(DataFrame cols _) (Just wc) =
+    if whereClauseHasValidColumns wc cols
+    then filterDataFrame df wc
+    else Left "Error: Specified column in WhereClause does not exist."
+filterRows (DataFrame cols rows) Nothing = Right $ DataFrame cols []
+
+whereClauseHasValidColumns :: WhereClause -> [Column] -> Bool
+whereClauseHasValidColumns (IsValueBool _ _ columnName) cols = isJust (findColumnIndex columnName cols)
+whereClauseHasValidColumns (Conditions conditions) cols = Data.List.all (`conditionHasValidColumn` cols) conditions
+
+conditionHasValidColumn :: Condition -> [Column] -> Bool
+conditionHasValidColumn condition cols = isJust (findColumnIndex (columnNameFromCondition condition) cols)
+
+columnNameFromCondition :: Condition -> String
+columnNameFromCondition (Equals colName _) = extractColumnName colName
+columnNameFromCondition (GreaterThan colName _) = extractColumnName colName
+columnNameFromCondition (LessThan colName _) = extractColumnName colName
+columnNameFromCondition (LessthanOrEqual colName _) = extractColumnName colName
+columnNameFromCondition (GreaterThanOrEqual colName _) = extractColumnName colName
+columnNameFromCondition (NotEqual colName _) = extractColumnName colName
+
+extractColumnName :: SelectColumn -> String
+extractColumnName (TableColumn _ colName) = colName
+-- Add cases for other SelectColumn variants if necessary
+extractColumnName _ = error "Unsupported SelectColumn type for condition"
+
+
+filterDataFrame :: DataFrame -> WhereClause -> Either String DataFrame
+filterDataFrame (DataFrame cols rows) wc =
+    let filteredRows = Data.List.filter (rowSatisfiesWhereClause wc cols) rows
+    in if Data.List.null filteredRows
+       then Left "Error: No rows match the specified condition."
+       else Right $ DataFrame cols filteredRows
+
+rowSatisfiesWhereClause :: WhereClause -> [Column] -> Row -> Bool
+rowSatisfiesWhereClause (IsValueBool b _ columnName) cols row =
+    case findColumnIndex columnName cols of
+        Just idx -> case row !! idx of
+            BoolValue val -> val == b
+            _ -> False
+        Nothing -> False
+rowSatisfiesWhereClause (Conditions conditions) cols row =
+    Data.List.all (`conditionSatisfied` (cols, row)) conditions
+
+conditionSatisfied :: Condition -> ([Column], Row) -> Bool
+conditionSatisfied (Equals colName condValue) (cols, row) =
+    compareWithCondition (columnNameFromSelectColumn colName) cols row (==) condValue
+conditionSatisfied (GreaterThan colName condValue) (cols, row) =
+    compareWithCondition (columnNameFromSelectColumn colName) cols row (>) condValue
+conditionSatisfied (LessThan colName condValue) (cols, row) =
+    compareWithCondition (columnNameFromSelectColumn colName) cols row (<) condValue
+conditionSatisfied (LessthanOrEqual colName condValue) (cols, row) =
+    compareWithCondition (columnNameFromSelectColumn colName) cols row (<=) condValue
+conditionSatisfied (GreaterThanOrEqual colName condValue) (cols, row) =
+    compareWithCondition (columnNameFromSelectColumn colName) cols row (>=) condValue
+conditionSatisfied (NotEqual colName condValue) (cols, row) =
+    compareWithCondition (columnNameFromSelectColumn colName) cols row (/=) condValue
+
+columnNameFromSelectColumn :: SelectColumn -> String
+columnNameFromSelectColumn (TableColumn _ colName) = colName
+columnNameFromSelectColumn _ = error "Unsupported SelectColumn type for condition"
+
+compareWithCondition :: String -> [Column] -> Row -> (forall a. Ord a => a -> a -> Bool) -> ConditionValue -> Bool
+compareWithCondition colName cols row op condValue =
+    case findColumnIndex colName cols of
+        Just idx -> compareValue (row !! idx) op condValue
+        Nothing -> False
+
+compareValue :: Value -> (forall a. Ord a => a -> a -> Bool) -> ConditionValue -> Bool
+compareValue (IntegerValue i) op (IntValue v) = i `op` v
+compareValue (StringValue s) op (StrValue v) = s `op` v
+compareValue _ _ _ = False
+
+findColumnIndex :: String -> [Column] -> Maybe Int
+findColumnIndex columnName cols = Data.List.findIndex (\(Column name _) -> name == columnName) cols
+
+createRowFromValues :: Maybe [ColumnName] -> [Column] -> [InsertValue] -> Either String Row
+createRowFromValues maybeSelectedColumns cols values =
+    case maybeSelectedColumns of
+        Just selectedColumns -> 
+            if Data.List.length selectedColumns == Data.List.length values then
+                sequence $ Data.List.zipWith (matchValueToColumn cols) selectedColumns values
+            else
+                Left "Error: Number of specified columns and values does not match."
+        Nothing -> 
+            if Data.List.length cols == Data.List.length values then
+                sequence $ Data.List.zipWith matchValueToColumnType cols values
+            else
+                Left "Error: Number of table columns and values does not match."
+
+matchValueToColumn :: [Column] -> ColumnName -> InsertValue -> Either String Value
+matchValueToColumn cols colName value =
+    case Data.List.find (\(Column name _) -> name == colName) cols of
+        Just col -> matchValueToColumnType col value
+        Nothing  -> Left $ "Error: Column " ++ colName ++ " does not exist."
+
+matchValueToColumnType :: Column -> InsertValue -> Either String Value
+matchValueToColumnType (Column _ IntegerType) value =
+    maybe (Left "Error: Invalid integer value.") (Right . IntegerValue) (readMaybe value :: Maybe Integer)
+matchValueToColumnType (Column _ StringType) value =
+    Right $ StringValue value
+matchValueToColumnType (Column _ BoolType) value =
+    case Data.List.map Data.Char.toLower value of
+        "true"  -> Right $ BoolValue True
+        "false" -> Right $ BoolValue False
+        _       -> Left "Error: Invalid boolean value."
+
+extractColumnNames :: SelectedColumns -> [ColumnName]
+extractColumnNames = mapMaybe extractName
+  where
+    extractName :: SelectColumn -> Maybe ColumnName
+    extractName (TableColumn _ colName) = Just colName
+    extractName _ = Nothing
