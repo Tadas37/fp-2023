@@ -44,6 +44,7 @@ import Data.Time (UTCTime)
 import qualified Data.Aeson.Key as Key
 import qualified Data.ByteString.Char8 as BS
 import Data.Maybe (isJust, isNothing)
+import Data.Either (isRight)
 
 type TableName = String
 type FileContent = String
@@ -558,7 +559,7 @@ parseSelect statement = do
   tableNamesAndAb <- getTableNamesAndAb statement
   (beforeWhere, afterWhere) <- Right $ Data.List.break (== "where") statement
   (beforeFrom, _) <- Right $ Data.List.break (== "from") beforeWhere
-  whereClause <- statementClause afterWhere
+  whereClause <- statementClause afterWhere tableNamesAndAb
   selectType <- getSelectType beforeFrom
   tableNames <- Right $ Data.List.map fst tableNamesAndAb
   case selectType of
@@ -614,7 +615,6 @@ getTableNamesAndAb statement = names
       | even len && len > 0 = splitIntoTuples dropedTable
       | otherwise = Left "Invalid table formating in statement. Maybe table abbreviation was not provided?"
 
--- Look into and fix check if Data.List.all columns ar valid. Will do for now because of deadline but this method is shit
 getColumnWithTableAb :: [String] -> [(TableName, String)] -> Either ErrorMessage [(String, String)]
 getColumnWithTableAb statement tableNames = do
   (beforeFrom, _) <- Right $ Data.List.break (== "from") statement
@@ -732,20 +732,20 @@ isAggregate column
   | ("max(" `Data.List.isPrefixOf` column || "avg(" `Data.List.isPrefixOf` column) && ")" `Data.List.isSuffixOf` column && isValidColumn (Data.List.drop 4 (Data.List.init column)) = True
   | otherwise = False
 
-statementClause :: [String] -> Either ErrorMessage (Maybe WhereClause)
-statementClause afterWhere = do
+statementClause :: [String] -> [(TableName, String)] -> Either ErrorMessage (Maybe WhereClause)
+statementClause afterWhere tableNames = do
   case Data.List.length afterWhere of
     0 -> do
       Right Nothing
     _ -> do
-      tryParseWhereClause afterWhere
+      tryParseWhereClause afterWhere tableNames
 
-tryParseWhereClause :: [String] -> Either ErrorMessage (Maybe WhereClause)
-tryParseWhereClause afterWhere
-  | isBoolIsTrueFalseClauseLike = case splitStatementToWhereIsClause (Data.List.drop 1 afterWhere) of
+tryParseWhereClause :: [String] -> [(TableName, String)] -> Either ErrorMessage (Maybe WhereClause)
+tryParseWhereClause afterWhere tableNames
+  | isBoolIsTrueFalseClauseLike = case splitStatementToWhereIsClause (Data.List.drop 1 afterWhere) tableNames of
     Left err -> Left err
     Right clause -> Right $ Just clause
-  | isAndClauseLike = case parseWhereAnd (Data.List.drop 1 afterWhere) of
+  | isAndClauseLike = case parseWhereAnd (Data.List.drop 1 afterWhere) tableNames of
     Left err -> Left err
     Right clause -> Right $ Just clause
   | otherwise = Left "Failed to parse where clause. Where clause type not implemented or recognised. Please only use `where and` and `where bool is true/false`"
@@ -756,16 +756,18 @@ tryParseWhereClause afterWhere
     isBoolIsTrueFalseClauseLike = Data.List.length afterWhereWithoutWhere == 3 && Data.List.length afterIs == 2 && (afterIs !! 1 == "false" || afterIs !! 1 == "true") && firstElementIsColumn
     isAndClauseLike = Data.List.null afterIs
 
-splitStatementToWhereIsClause :: [String] -> Either ErrorMessage WhereClause
-splitStatementToWhereIsClause [boolColName, "is", boolString] = Right $ IsValueBool parsedBoolString tableName $ Data.List.init colName
+splitStatementToWhereIsClause :: [String] -> [(TableName, String)] -> Either ErrorMessage WhereClause
+splitStatementToWhereIsClause [boolColName, "is", boolString] tableNames = do
+   validTableName <- getFstTupleElemBySndElemInList (tableName, colName) tableNames
+   Right $ IsValueBool parsedBoolString validTableName $ Data.List.drop 1 colName
   where
     (tableName, colName) = Data.List.break (== '.') boolColName
     parsedBoolString = boolString == "true"
-splitStatementToWhereIsClause _ = Left "Unsupported or invalid where bool is true false clause"
+splitStatementToWhereIsClause _ _ = Left "Unsupported or invalid where bool is true false clause. Maybe the formating is wrong?"
 
 
-parseWhereAnd :: [String] -> Either ErrorMessage WhereClause
-parseWhereAnd afterWhere
+parseWhereAnd :: [String] -> [(TableName, String)] -> Either ErrorMessage WhereClause
+parseWhereAnd afterWhere tableNames
   | matchesWhereAndPattern afterWhere = splitStatementToAndClause afterWhere
   | otherwise = Left "Unable to parse where and clause"
   where
@@ -779,11 +781,11 @@ parseWhereAnd afterWhere
 
     getConditionList :: [String] -> Either ErrorMessage [Condition]
     getConditionList [condition1, operator, condition2] = do
-      condition <- getCondition condition1 operator condition2
+      condition <- getCondition condition1 operator condition2 tableNames
       return [condition]
 
     getConditionList (condition1 : operator : condition2 : "and" : xs) = do
-      conditionBase <- getCondition condition1 operator condition2
+      conditionBase <- getCondition condition1 operator condition2 tableNames
       rest <- if not (Data.List.null xs) then getConditionList xs else Right []
       return $ conditionBase : rest
 
@@ -795,20 +797,20 @@ getConditionValue condition
   | Data.List.length condition > 2 && "'" `Data.List.isPrefixOf` condition && "'" `Data.List.isSuffixOf` condition = Right $ StrValue (Data.List.drop 1 (Data.List.init condition))
   | otherwise = Left "Error parsing condition value"
 
-getCondition :: String -> String -> String -> Either ErrorMessage Condition
-getCondition val1 op val2
-  | op == "=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ Equals (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == "=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1= Right $ Equals (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == ">" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThan (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == ">" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThan (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == "<" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessThan (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == "<" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessThan (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == ">=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThanOrEqual (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == ">=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThanOrEqual (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == "<=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessthanOrEqual (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == "<=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessthanOrEqual (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == "<>" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ NotEqual (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == "<>" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ NotEqual (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+getCondition :: String -> String -> String -> [(TableName, String)] -> Either ErrorMessage Condition
+getCondition val1 op val2 tableNames
+  | op == "=" && isRight val1TableEither && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ Equals (TableColumn val1Table (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "=" && isRight val2TableEither && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1= Right $ Equals (TableColumn val2Table (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == ">" && isRight val1TableEither && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThan (TableColumn val1Table (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == ">" && isRight val2TableEither && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThan (TableColumn val2Table (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "<" && isRight val1TableEither && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessThan (TableColumn val1Table (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "<" && isRight val2TableEither && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessThan (TableColumn val2Table (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == ">=" && isRight val1TableEither && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThanOrEqual (TableColumn val1Table (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == ">=" && isRight val2TableEither && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThanOrEqual (TableColumn val2Table (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "<=" && isRight val1TableEither && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessthanOrEqual (TableColumn val1Table (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "<=" && isRight val2TableEither && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessthanOrEqual (TableColumn val2Table (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "<>" && isRight val1TableEither && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ NotEqual (TableColumn val1Table (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "<>" && isRight val2TableEither && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ NotEqual (TableColumn val2Table (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
   | otherwise = Left "Error parsing where and condition. Only able to compare integer and string values with columns"
   where
     (val1TableAb, val1Column) = Data.List.break (=='.') val1
@@ -819,6 +821,12 @@ getCondition val1 op val2
     val2HasDot = not (Data.List.null (Data.List.drop 1 val2Column))
     condition1 = getConditionValue val1
     condition2 = getConditionValue val2
+    val1TableEither  = getFstTupleElemBySndElemInList (val1TableAb, "I LOVE HAKELL") tableNames 
+    val2TableEither  = getFstTupleElemBySndElemInList (val2TableAb, "THIS CODE I SO GREAT. ITS THE BEST CODE. THE BEST") tableNames 
+
+    val1Table = castEither "If you are the user of this app and you are seeing this. I am sorry to inform you that the creators of this program suck at coding" val1TableEither
+    val2Table = castEither "If you are the user of this app and you are seeing this. I am sorry to inform you that the creators of this program suck at coding" val2TableEither
+   
     defaultCondition = StrValue "Kas skaitys tas gaidys (Isskyrus destytoja)"
 
     isCondition1 = case condition1 of
