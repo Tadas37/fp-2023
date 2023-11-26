@@ -1,5 +1,8 @@
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 module Main (main) where
 
+import Data.List (find)
+import Data.Maybe (mapMaybe)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Free (Free (..), liftF)
 import Data.Functor((<&>))
@@ -80,35 +83,80 @@ runExecuteIO (Free step) = do
         case lookup tableName tables of
             Just df -> return $ next df
             Nothing -> error $ "Table not found: " ++ tableName
+    runStep (Lib3.GetNotSelectTableName statement next) =
+        case statement of
+            Lib3.DeleteStatement tableName _ -> return $ next tableName
+            Lib3.InsertStatement tableName _ _ -> return $ next tableName
+            Lib3.UpdateStatement tableName _ _ _ -> return $ next tableName
+            _ -> error "No table name for non-select statement"
+    runStep (Lib3.GetTableNames parsedStatement next) = return $ next $ getTableNames parsedStatement
+      where
+        getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
+        getTableNames (Lib3.SelectAll tableNames _) = tableNames
+        getTableNames (Lib3.SelectAggregate tableNames _ _) = tableNames
+        getTableNames (Lib3.SelectColumns tableNames _ _) = tableNames
+        getTableNames (Lib3.DeleteStatement tableName _) = [tableName]
+        getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
+        getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
+    
     runStep (Lib3.UpdateTable (tableName, df) next) = do
-          let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
-          let yamlContent = Lib3.serializeTableToYAML serializedTable
-          writeFile (getTableFilePath tableName) yamlContent
-          return next
+        let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
+        let yamlContent = Lib3.serializeTableToYAML serializedTable
+        writeFile (getTableFilePath tableName) yamlContent
+        return next
     runStep (Lib3.GenerateDataFrame columns rows next) =
-      return $ next (DataFrame columns rows)
+        return $ next (DataFrame columns rows)
+    runStep (Lib3.GetReturnTableRows parsedStatement tables timeStamp next) = do
+      let rows = case parsedStatement of
+            Lib3.SelectAll _ _ -> extractAllRows tables
+            _ -> error "Unhandled statement type in GetReturnTableRows"
+      return $ next rows
+      where
+        extractAllRows :: [(Lib3.TableName, DataFrame)] -> [Row]
+        extractAllRows tbls = concatMap (dfRows . snd) tbls
+    
+        dfRows :: DataFrame -> [Row]
+        dfRows (DataFrame _ rows) = rows
+    runStep (Lib3.ShowTablesFunction tables next) = do
+      let column = Column "tableName" StringType
+          rows = map (\name -> [StringValue name]) tables
+      let df = DataFrame [column] rows
+      return (next df)
     runStep (Lib3.ShowTableFunction (DataFrame.DataFrame columns _) next) = do
+        let newDf = DataFrame.DataFrame [DataFrame.Column "ColumnNames" DataFrame.StringType] 
+                                        (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))
+        return $ next newDf
+    runStep (Lib3.GetSelectedColumns parsedStatement tables next) =
+        return $ next $ Lib3.getSelectedColumnsFunction parsedStatement tables
+        
+    runStep (Lib3.IsParsedStatementValid parsedStatement tables next) = do
+      let isValid = Lib3.validateStatement parsedStatement tables
+      return $ next isValid
 
-      let newDf = DataFrame.DataFrame [DataFrame.Column "ColumnNames" DataFrame.StringType] 
-                                      (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))
-  
-      return $ next newDf
+
+    runStep (Lib3.UpdateRows parsedStatement tables next) = do
+      let updatedTable = updateTable parsedStatement tables
+      case updatedTable of
+          Just tbl -> return $ next tbl
+          Nothing -> error "Table not found for updating rows"
+      where
+        updateTable :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> Maybe (Lib3.TableName, DataFrame)
+        updateTable stmt tbls =
+            case stmt of
+                Lib3.UpdateStatement tableName _ _ _ -> do
+                    df <- lookup tableName tbls
+                    return (tableName, Lib3.updateRowsInTable stmt df)
+                _ -> Nothing
+          
+
     runStep (Lib3.ParseSql statement next) = 
       case Lib3.parseStatement statement of
         Right parsedStatement -> return $ next parsedStatement
         Left error -> return $ next $ Lib3.Invalid error
       
     columnName :: DataFrame.Column -> String
-    columnName (DataFrame.Column name _) = name
+    columnName (DataFrame.Column name _) = name 
 
-    formatRow :: [DataFrame.Value] -> String 
-    formatRow row = "[" ++ (intercalate "],[" $ map valueToString row) ++ "]"
-    
-    valueToString :: DataFrame.Value -> String
-    valueToString (DataFrame.IntegerValue i) = show i
-    valueToString (DataFrame.StringValue s) = "\"" ++ s ++ "\""
-    valueToString (DataFrame.BoolValue b) = show b
-    valueToString DataFrame.NullValue = "NULL"
-    
     getTableFilePath :: String -> String
     getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
+    

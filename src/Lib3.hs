@@ -5,12 +5,19 @@ module Lib3
     parseTables,
     Execution,
     ExecutionAlgebra(..),
+    ParsedStatement(..),
+    SelectColumn(..),
+    TableName,
     loadFiles,
     getTime,
     parseYAMLContent,
     getTableDfByName,
     dataFrameToSerializedTable,
     serializeTableToYAML,
+    validateStatement,
+    SerializedTable(..),
+    getSelectedColumnsFunction,
+    updateRowsInTable,
     parseStatement,
     ParsedStatement (..)
   )
@@ -22,6 +29,8 @@ import DataFrame (Column(..), ColumnType(..), Value(..), Row, DataFrame(..))
 import Data.Yaml (decodeEither')
 import Data.Text.Encoding as TE
 import Data.Text as T
+import Data.List
+import Data.Maybe (mapMaybe)
 import Data.List
     ( map,
       elem,
@@ -165,7 +174,7 @@ parseSql :: SQLQuery -> Execution ParsedStatement
 parseSql query = liftF $ ParseSql query id
 
 isParsedStatementValid :: ParsedStatement -> [(TableName, DataFrame)] -> Execution Bool
-isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables id
+isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables (\_ -> validateStatement statement tables)
 
 getTableNames :: ParsedStatement -> Execution [TableName]
 getTableNames statement = liftF $ GetTableNames statement id
@@ -240,6 +249,24 @@ executeSql statement = do
       InvalidStatement -> do
         return $ Left "Invalid statement"
 
+updateRowsInTable :: ParsedStatement -> DataFrame -> DataFrame
+updateRowsInTable (UpdateStatement _ _ newRow maybeWhereClause) (DataFrame columns rows) =
+   DataFrame columns (Data.List.map (updateRowIfMatches newRow maybeWhereClause) rows)
+updateRowsInTable _ df = df
+
+updateRowIfMatches :: Row -> Maybe WhereClause -> Row -> Row
+updateRowIfMatches newRow (Just whereClause) row =
+    if rowMatchesWhereClause row whereClause
+    then newRow
+    else row
+updateRowIfMatches newRow Nothing _ = newRow
+
+rowMatchesWhereClause :: Row -> WhereClause -> Bool
+rowMatchesWhereClause row (IsValueBool b tableName columnName) = False
+rowMatchesWhereClause row (Conditions conditions) = Data.List.all (rowMatchesCondition row) conditions
+
+rowMatchesCondition :: Row -> Condition -> Bool
+rowMatchesCondition row (Equals (TableColumn _ columnName) (IntValue value)) = False
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content = 
@@ -322,6 +349,44 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
     convertValue (BoolValue b) = Y.Bool b
     convertValue NullValue = Y.Null
 
+validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> Bool
+validateStatement stmt tables = case stmt of
+  SelectAll tableNames _ -> Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames
+  SelectColumns tableNames cols _ -> validateTableAndColumns tableNames cols tables
+  InsertStatement tableName cols _ -> validateTableAndColumns [tableName] cols tables
+  UpdateStatement tableName cols _ _ -> validateTableAndColumns [tableName] cols tables
+  DeleteStatement tableName _ -> tableName `Data.List.elem` Data.List.map fst tables
+  _ -> True  
+
+validateTableAndColumns :: [TableName] -> [SelectColumn] -> [(TableName, DataFrame)] -> Bool
+validateTableAndColumns tableNames cols tables = Data.List.all tableAndColumnsExist tableNames
+  where
+    tableAndColumnsExist tableName = maybe False (columnsExistInTable cols) (lookup tableName tables)
+
+    columnsExistInTable :: [SelectColumn] -> DataFrame -> Bool
+    columnsExistInTable columns df = Data.List.all (`columnExistsInDataFrame` df) columns
+
+    columnExistsInDataFrame :: SelectColumn -> DataFrame -> Bool
+    columnExistsInDataFrame (TableColumn _ colName) (DataFrame cols _) = 
+      Data.List.any (\(Column name _) -> name == colName) cols
+    columnExistsInDataFrame _ _ = True
+
+getSelectedColumnsFunction :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
+getSelectedColumnsFunction stmt tbls = case stmt of
+    Lib3.SelectAll tableNames _ -> Data.List.concatMap (getTableColumns tbls) tableNames
+    Lib3.SelectColumns _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
+    _ -> []
+
+getTableColumns :: [(Lib3.TableName, DataFrame)] -> Lib3.TableName -> [Column]
+getTableColumns tbls tableName = case lookup tableName tbls of
+    Just (DataFrame columns _) -> columns
+    Nothing -> []
+
+findColumn :: [(Lib3.TableName, DataFrame)] -> Lib3.SelectColumn -> Maybe Column
+findColumn tbls (Lib3.TableColumn tblName colName) =
+    case lookup tblName tbls of
+        Just (DataFrame columns _) -> Data.List.find (\(Column name _) -> name == colName) columns
+        Nothing -> Nothing
 
 -- ONLY SQL PARSER BELOW
 
