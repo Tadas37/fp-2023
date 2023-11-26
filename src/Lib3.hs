@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveFunctor #-}
+
 module Lib3
   ( executeSql,
     parseTables,
