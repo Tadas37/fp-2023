@@ -9,7 +9,8 @@ module Lib3
     getTableDfByName,
     dataFrameToSerializedTable,
     serializeTableToYAML,
-    parseStatement
+    parseStatement,
+    ParsedStatement (..)
   )
 where
 

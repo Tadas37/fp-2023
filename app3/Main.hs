@@ -95,8 +95,8 @@ runExecuteIO (Free step) = do
       return $ next newDf
     runStep (Lib3.ParseSql statement next) = 
       case Lib3.parseStatement statement of
-        Right parsedStatement -> return $ next parseStatement
-        Left error -> return $ next $ Invalid error
+        Right parsedStatement -> return $ next parsedStatement
+        Left error -> return $ next $ Lib3.Invalid error
       
     columnName :: DataFrame.Column -> String
     columnName (DataFrame.Column name _) = name
