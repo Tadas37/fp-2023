@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveFunctor #-}
-
 module Lib3
   ( executeSql,
     parseTables,
@@ -11,6 +9,7 @@ module Lib3
     getTableDfByName,
     dataFrameToSerializedTable,
     serializeTableToYAML,
+    parseStatement
   )
 where
 
@@ -21,11 +20,27 @@ import Data.Yaml (decodeEither')
 import Data.Text.Encoding as TE
 import Data.Text as T
 import Data.List
+    ( map,
+      elem,
+      length,
+      null,
+      all,
+      words,
+      break,
+      drop,
+      dropWhile,
+      head,
+      init,
+      last,
+      intercalate,
+      isPrefixOf,
+      isSuffixOf )
 import qualified Data.Yaml as Y
-import Data.Char (toLower)
+import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
 import qualified Data.Aeson.Key as Key
 import qualified Data.ByteString.Char8 as BS
+import Data.Maybe (isJust, isNothing)
 
 type TableName = String
 type FileContent = String
@@ -307,10 +322,10 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
 
 parseStatement :: String  -> Either ErrorMessage ParsedStatement
 parseStatement input
-  | last input /= ';' = Left "Missing semicolon at end of statement"
+  | Data.List.last input /= ';' = Left "Missing semicolon at end of statement"
   | otherwise = mapStatementType wordsInput
   where
-    cleanedInput = init input
+    cleanedInput = Data.List.init input
     wordsInput = parseSemiCaseSensitive cleanedInput
 
 mapStatementType :: [String] -> Either ErrorMessage ParsedStatement
@@ -318,7 +333,7 @@ mapStatementType statement = do
   statementType <- guessStatementType statement
   case statementType of
       Select -> do
-        parseSelect (drop 1 statement)
+        parseSelect (Data.List.drop 1 statement)
       Insert -> do
         parseInsert statement
       Delete -> do
@@ -351,23 +366,23 @@ parseInsert statement = do
 
 getInsertTableName :: [String] -> Either ErrorMessage TableName
 getInsertTableName statement = do
-  (_, intoAndAfter) <- Right $ break (== "into") statement
-  tableToInsertInto <- Right $ drop 1 intoAndAfter
-  if not (null tableToInsertInto) && isValidTable (head tableToInsertInto)
-      then Right $ head tableToInsertInto
+  (_, intoAndAfter) <- Right $ Data.List.break (== "into") statement
+  tableToInsertInto <- Right $ Data.List.drop 1 intoAndAfter
+  if not (Data.List.null tableToInsertInto) && isValidTable (Data.List.head tableToInsertInto)
+      then Right $ Data.List.head tableToInsertInto
       else Left "Update statement table name does not meet requirements. Maybe ilegal characters were used?"
 
 getInsertColumns :: [String] -> TableName -> Either ErrorMessage ParsedStatement
 getInsertColumns statement tableName = do
-  (_, intoAndAfter) <- Right $ break (== "into") statement
-  (intoToValues, valuesAndAfter) <- Right $ break (== "values") intoAndAfter
-  cleanedValues <- cleanInsertHeadAndTail (drop 1 valuesAndAfter)
-  columnNames <- getColumnNames $ drop 2 intoToValues
+  (_, intoAndAfter) <- Right $ Data.List.break (== "into") statement
+  (intoToValues, valuesAndAfter) <- Right $ Data.List.break (== "values") intoAndAfter
+  cleanedValues <- cleanInsertHeadAndTail (Data.List.drop 1 valuesAndAfter)
+  columnNames <- getColumnNames $ Data.List.drop 2 intoToValues
   columnValues <- getInsertColumnValues cleanedValues
   columns <-
-    if length columnNames /= length columnValues
+    if Data.List.length columnNames /= Data.List.length columnValues
       then Left "Column count does not match value count in insert statement"
-      else Right $ map (TableColumn tableName) columnNames
+      else Right $ Data.List.map (TableColumn tableName) columnNames
   getInsertStatement tableName columns columnValues
 
 getInsertStatement :: TableName -> [SelectColumn] -> [Value] -> Either ErrorMessage ParsedStatement
@@ -379,7 +394,7 @@ getInsertColumnValues [value] = do
   return [val]
 
 getInsertColumnValues (value : xs) = do
-  cleanedString <- if last value == ',' then Right $ init value else Left "Failed to parse INSERT values"
+  cleanedString <- if Data.List.last value == ',' then Right $ Data.List.init value else Left "Failed to parse INSERT values"
   val <- getValueFromString cleanedString
   rest <- getInsertColumnValues xs
   return $ rest ++ [val]
@@ -393,11 +408,11 @@ getColumnNames rawNames = do
 
 cleanInsertHeadAndTail :: [String] -> Either ErrorMessage [String]
 cleanInsertHeadAndTail input =
-  if not (null input) && head (head input) == '(' && last (last input) == ')'
+  if not (Data.List.null input) && Data.List.head (Data.List.head input) == '(' && Data.List.last (Data.List.last input) == ')'
     then
-      if length input == 1
-        then Right [drop 1 (init (head input))]
-        else Right $ [drop 1 (head input)] ++ init (drop 1 input) ++ [init (last input)]
+      if Data.List.length input == 1
+        then Right [Data.List.drop 1 (Data.List.init (Data.List.head input))]
+        else Right $ [Data.List.drop 1 (Data.List.head input)] ++ Data.List.init (Data.List.drop 1 input) ++ [Data.List.init (Data.List.last input)]
     else Left "formating of insert statement does not meet requirements. Most likely issing `(` or `)`"
 
 cleanInsertCommas :: [String] -> Either ErrorMessage [String]
@@ -408,24 +423,18 @@ cleanInsertCommas [column] =
 
 cleanInsertCommas (column : xs) = do
   currentColumn <-
-    if last column == ',' && isValidColumnWithoutAb column
-      then Right $ init column
+    if Data.List.last column == ',' && isValidColumnWithoutAb column
+      then Right $ Data.List.init column
       else Left "Missing comma or invalid column name for insert statement"
   rest <- cleanInsertCommas xs
   return $ rest ++ [currentColumn]
 
 cleanInsertCommas _ = Left "Unknown error parsing columns in insert statement"
 
-getInsertValues :: [String] -> Int -> Either ErrorMessage [Value]
-getInsertValues _ _ = Left "Not implemented getInsertValues"
-
-getParsedStatement :: TableName -> [SelectColumn] -> [Value] -> Either ErrorMessage ParsedStatement
-getParsedStatement _ _ _ = Left "Not implemented getParsedStatement"
-
 parseDelete :: [String] -> Either ErrorMessage ParsedStatement
 parseDelete statement = do
   tableName <- getTableNameFromDelete statement
-  (_, fromWhere) <- Right $ break (== "where") statement
+  (_, fromWhere) <- Right $ Data.List.break (== "where") statement
   whereClause <- statementClause' fromWhere tableName
   getDeleteStatement tableName whereClause
 
@@ -434,16 +443,16 @@ getDeleteStatement tableName whereClause = Right $ DeleteStatement tableName whe
 
 getTableNameFromDelete :: [String] -> Either ErrorMessage TableName
 getTableNameFromDelete statement = do
-  (_, fromAndElse) <- Right $ break (== "from") statement
-  (fromToWhere, _) <- Right $ break (== "where") fromAndElse
-  if length fromToWhere /= 2 || not (isValidTable (last fromToWhere))
-      then Left $ "Invalid delete statement table name: " ++ last fromToWhere
-      else Right $ last fromToWhere
+  (_, fromAndElse) <- Right $ Data.List.break (== "from") statement
+  (fromToWhere, _) <- Right $ Data.List.break (== "where") fromAndElse
+  if Data.List.length fromToWhere /= 2 || not (isValidTable (Data.List.last fromToWhere))
+      then Left $ "Invalid delete statement table name: " ++ Data.List.last fromToWhere
+      else Right $ Data.List.last fromToWhere
 
 
 parseUpdate :: [String] -> Either ErrorMessage ParsedStatement
 parseUpdate statement = do
-  (_, afterWhere) <- Right $ break (== "where") statement
+  (_, afterWhere) <- Right $ Data.List.break (== "where") statement
   tableName <- getUpdateTableName statement
   columnAndNewValueString <- getColumnAndNewValueStringsForUpdate statement
   selectedColumns <- getSelectedColumnsForUpdate columnAndNewValueString tableName
@@ -454,24 +463,24 @@ parseUpdate statement = do
 -- Why did I use `do` here? Well... Thats a good question that I don't know the answer to
 getUpdateTableName :: [String] -> Either ErrorMessage TableName
 getUpdateTableName statement = do
-  (beforeSet, _) <- Right $ break (== "set") statement
-  tableToUpdate <- Right $ drop 1 beforeSet
+  (beforeSet, _) <- Right $ Data.List.break (== "set") statement
+  tableToUpdate <- Right $ Data.List.drop 1 beforeSet
   if isUpdateTableNameValid tableToUpdate
-      then Right $ head tableToUpdate
+      then Right $ Data.List.head tableToUpdate
       else Left "Update statement table name does not meet requirements. Maybe ilegal characters were used?"
 
 isUpdateTableNameValid :: [String] -> Bool
-isUpdateTableNameValid table = length table == 1 && isValidTable (head table)
+isUpdateTableNameValid table = Data.List.length table == 1 && isValidTable (Data.List.head table)
 
 getColumnAndNewValueStringsForUpdate :: [String] -> Either ErrorMessage [String]
 getColumnAndNewValueStringsForUpdate updateStatement = do
-  (_, setAndAfter) <- Right $ break (== "set") updateStatement
-  (fromSetToWhere, _) <- Right $ break (== "where") setAndAfter
+  (_, setAndAfter) <- Right $ Data.List.break (== "set") updateStatement
+  (fromSetToWhere, _) <- Right $ Data.List.break (== "where") setAndAfter
   cleanedFromSetToWhere <- Right $ cleanLastComma fromSetToWhere
-  Right $ drop 1 cleanedFromSetToWhere
+  Right $ Data.List.drop 1 cleanedFromSetToWhere
 
 cleanLastComma :: [String] -> [String]
-cleanLastComma = map (\str -> if last str == ',' then init str else str)
+cleanLastComma = Data.List.map (\str -> if Data.List.last str == ',' then Data.List.init str else str)
 
 getSelectedColumnsForUpdate :: [String] -> TableName -> Either ErrorMessage [SelectColumn]
 getSelectedColumnsForUpdate [val1, op, val2] tableName = do
@@ -487,7 +496,7 @@ getSelectedColumnsForUpdate _ _ = Left "Invalid column formating for UPDATE stat
 
 getValidUpdateColumn :: String -> String -> String -> TableName -> Either ErrorMessage SelectColumn
 getValidUpdateColumn val1 op val2 tableName
-  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || ("'" `isPrefixOf` val2 && "'" `isSuffixOf` val2 )) = Right $ TableColumn tableName val1
+  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || ("'" `Data.List.isPrefixOf` val2 && "'" `Data.List.isSuffixOf` val2 )) = Right $ TableColumn tableName val1
   | otherwise = Left "Unable to update table do to bad update statement. Failed to parse new column values"
 
 checkIfDoesNotContainSpecialSymbols :: String -> Bool
@@ -507,7 +516,7 @@ getValuesToUpdate _  = Left "Invalid column formating for UPDATE statement"
 
 getValidUpdateValue :: String -> String -> String -> Either ErrorMessage Value
 getValidUpdateValue val1 op val2
-  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || ("'" `isPrefixOf` val2 && "'" `isSuffixOf` val2 )) = getValueFromString val2
+  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || ("'" `Data.List.isPrefixOf` val2 && "'" `Data.List.isSuffixOf` val2 )) = getValueFromString val2
   | otherwise = Left "Unable to update table do to bad update statement. Failed to parse columns to be updated"
 
 getValueFromString :: String -> Either ErrorMessage Value
@@ -515,7 +524,7 @@ getValueFromString valueString
   | valueString == "true" = Right $ BoolValue True
   | valueString == "false" = Right $ BoolValue False
   | isNumber valueString = Right $ IntegerValue (read valueString :: Integer)
-  | "'" `isPrefixOf` valueString && "'" `isSuffixOf` valueString = Right $ StringValue $ drop 1 (init valueString)
+  | "'" `Data.List.isPrefixOf` valueString && "'" `Data.List.isSuffixOf` valueString = Right $ StringValue $ Data.List.drop 1 (Data.List.init valueString)
   | otherwise = Left "Failed to parse UPDATE statement value. Only string, integer and bool values allowed"
 
 getUpdateStatement :: TableName -> [SelectColumn] -> Row -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
@@ -538,17 +547,17 @@ parseShowTable _ = Left "Failed to parse SHOW TABLE statement"
 
 isValidTable :: String -> Bool
 isValidTable originalName
-  | "'" `isPrefixOf` originalName || "'" `isSuffixOf` originalName || "avg(" `isPrefixOf` originalName || "max(" `isPrefixOf` originalName || ")" `isSuffixOf` originalName = False
+  | "'" `Data.List.isPrefixOf` originalName || "'" `Data.List.isSuffixOf` originalName || "avg(" `Data.List.isPrefixOf` originalName || "max(" `Data.List.isPrefixOf` originalName || ")" `Data.List.isSuffixOf` originalName = False
   | otherwise = True
 
 parseSelect :: [String] -> Either ErrorMessage ParsedStatement
 parseSelect statement = do
   tableNamesAndAb <- getTableNamesAndAb statement
-  (beforeWhere, afterWhere) <- Right $ break (== "where") statement
-  (beforeFrom, _) <- Right $ break (== "from") beforeWhere
+  (beforeWhere, afterWhere) <- Right $ Data.List.break (== "where") statement
+  (beforeFrom, _) <- Right $ Data.List.break (== "from") beforeWhere
   whereClause <- statementClause afterWhere
   selectType <- getSelectType beforeFrom
-  tableNames <- Right $ map fst tableNamesAndAb
+  tableNames <- Right $ Data.List.map fst tableNamesAndAb
   case selectType of
     Aggregate -> do
       aggregateColumns <- getAggregateColumns beforeFrom tableNamesAndAb
@@ -576,11 +585,11 @@ getAggregateColumns _ _ = Left "Error parsing aggregate columns"
 
 parseAggregateColumn :: String -> [(TableName, String)] -> Either ErrorMessage SelectColumn
 parseAggregateColumn column tableNames
-  | isValid && "avg(" `isPrefixOf` column && ")" `isSuffixOf` column = Right $ Avg tableAb columnName
-  | isValid && "max(" `isPrefixOf` column && ")" `isSuffixOf` column = Right $ Max tableAb columnName
+  | isValid && "avg(" `Data.List.isPrefixOf` column && ")" `Data.List.isSuffixOf` column = Right $ Avg tableAb columnName
+  | isValid && "max(" `Data.List.isPrefixOf` column && ")" `Data.List.isSuffixOf` column = Right $ Max tableAb columnName
   | otherwise = Left $ "Failed to parse aggregate column" ++ column
     where
-      removedAggregate = drop 4 (init column)
+      removedAggregate = Data.List.drop 4 (Data.List.init column)
       [tableAb, columnName] = wordsWhen (== '.') removedAggregate
       isValid = findIfTupleWithSndElemEqualToExists tableAb tableNames
 
@@ -593,24 +602,24 @@ findIfTupleWithSndElemEqualToExists val ((_, sndVal) : xs) = (val == sndVal) || 
 getTableNamesAndAb :: [String] -> Either ErrorMessage [(TableName, String)]
 getTableNamesAndAb statement = names
   where
-    (_, afterFrom) = break (== "from") statement
-    (tables, _) = break (== "where") afterFrom
-    dropedTable = drop 1 tables
-    len = length dropedTable
+    (_, afterFrom) = Data.List.break (== "from") statement
+    (tables, _) = Data.List.break (== "where") afterFrom
+    dropedTable = Data.List.drop 1 tables
+    len = Data.List.length dropedTable
 
     names
       | even len && len > 0 = splitIntoTuples dropedTable
       | otherwise = Left "Invalid table formating in statement. Maybe table abbreviation was not provided?"
 
--- Look into and fix check if all columns ar valid. Will do for now because of deadline but this method is shit
+-- Look into and fix check if Data.List.all columns ar valid. Will do for now because of deadline but this method is shit
 getColumnWithTableAb :: [String] -> [(TableName, String)] -> Either ErrorMessage [(String, String)]
 getColumnWithTableAb statement tableNames = do
-  (beforeFrom, _) <- Right $ break (== "from") statement
+  (beforeFrom, _) <- Right $ Data.List.break (== "from") statement
   columnAndAbList <- Right $ getListOfTableAbAndColumn beforeFrom
-  isValidColumnNames <- Right $ all isValidColumn beforeFrom
-  if null columnAndAbList || odd (length columnAndAbList) || not isValidColumnNames
+  isValidColumnNames <- Right $ Data.List.all isValidColumn beforeFrom
+  if Data.List.null columnAndAbList || odd (Data.List.length columnAndAbList) || not isValidColumnNames
     then do
-      Left $ "error parsing columns. Maybe table name abbreviation was not provided? : " ++ head columnAndAbList 
+      Left $ "error parsing columns. Maybe table name abbreviation was not provided? : " ++ Data.List.head columnAndAbList 
     else do
       splitList <- splitIntoTuples columnAndAbList
       getCorrectTableAndColumns splitList tableNames
@@ -654,10 +663,10 @@ getListOfTableAbAndColumn (abAndColumn : xs) = wordsWhen (== '.') abAndColumn ++
 
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
-wordsWhen p s = case dropWhile p s of
+wordsWhen p s = case Data.List.dropWhile p s of
   "" -> []
   s' -> w : wordsWhen p s''
-        where (w, s'') = break p s'
+        where (w, s'') = Data.List.break p s'
 
 
 splitIntoTuples :: [String] -> Either ErrorMessage [(String, String)]
@@ -666,14 +675,15 @@ splitIntoTuples (x : y : xs) = do
   baseTuple <- Right (x, y)
   rest <- splitIntoTuples xs
   return $ baseTuple : rest
-splitIntoTuples list = Left $ "Error parsing tables or columns. Maybe table abbreviation was not provided?" ++ concat list
+
+splitIntoTuples _ = Left "Error parsing tables or columns. Maybe table abbreviation was not provided?"
 
 parseAggregate :: [TableName] -> Maybe WhereClause -> [SelectColumn] -> Either ErrorMessage ParsedStatement
 parseAggregate tableNames whereClause columns = Right $ SelectAggregate tableNames columns whereClause
 
 -- ignores commas in columns
 parseColumnsSelect :: [TableName] -> [(String, String)] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
-parseColumnsSelect tables columns whereClause = Right $ SelectColumns tables (map (uncurry TableColumn) columns) whereClause
+parseColumnsSelect tables columns whereClause = Right $ SelectColumns tables (Data.List.map (uncurry TableColumn) columns) whereClause
 
 parseAllColumns :: [TableName] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
 parseAllColumns tableNames whereClause = Right $ SelectAll tableNames whereClause
@@ -687,7 +697,7 @@ getSelectType selectColumns
 
 isValidSelectAll :: [String] -> Bool
 isValidSelectAll selectColumns
-  | length selectColumns == 1 && head selectColumns == "*" = True
+  | Data.List.length selectColumns == 1 && Data.List.head selectColumns == "*" = True
   | otherwise = False
 
 hasAllValidColumns :: [String] -> Bool
@@ -698,16 +708,16 @@ hasAllValidColumns (column : xs) = isValidColumn column && hasAllValidColumns xs
 isValidColumn :: String -> Bool
 isValidColumn column = isSplitByDot && isNotAggregate && hasNoParenthesies || column == "now()"
   where
-    (beforeDot, afterDot) = break (== '.') column
-    isSplitByDot = not (null beforeDot) && not (null afterDot) && (length afterDot > 1)
+    (beforeDot, afterDot) = Data.List.break (== '.') column
+    isSplitByDot = not (Data.List.null beforeDot) && not (Data.List.null afterDot) && (Data.List.length afterDot > 1)
     isNotAggregate = not $ isAggregate column
-    hasNoParenthesies = not ("'" `isPrefixOf` column || "'" `isSuffixOf` column)
+    hasNoParenthesies = not ("'" `Data.List.isPrefixOf` column || "'" `Data.List.isSuffixOf` column)
 
 isValidColumnWithoutAb :: String -> Bool
 isValidColumnWithoutAb column = isNotAggregate && hasNoParenthesies || column == "now()"
   where
-    isNotAggregate = not $ "avg(" `isPrefixOf` column || "max(" `isPrefixOf` column || "'" `isSuffixOf` column
-    hasNoParenthesies = not ("'" `isPrefixOf` column || "'" `isSuffixOf` column)
+    isNotAggregate = not $ "avg(" `Data.List.isPrefixOf` column || "max(" `Data.List.isPrefixOf` column || "'" `Data.List.isSuffixOf` column
+    hasNoParenthesies = not ("'" `Data.List.isPrefixOf` column || "'" `Data.List.isSuffixOf` column)
 
 hasAllValidAggregates :: [String] -> Bool
 hasAllValidAggregates [] = False
@@ -716,12 +726,12 @@ hasAllValidAggregates (column : xs) = isAggregate column && hasAllValidAggregate
 
 isAggregate :: String -> Bool
 isAggregate column
-  | ("max(" `isPrefixOf` column || "avg(" `isPrefixOf` column) && ")" `isSuffixOf` column && isValidColumn (drop 4 (init column)) = True
+  | ("max(" `Data.List.isPrefixOf` column || "avg(" `Data.List.isPrefixOf` column) && ")" `Data.List.isSuffixOf` column && isValidColumn (Data.List.drop 4 (Data.List.init column)) = True
   | otherwise = False
 
 statementClause :: [String] -> Either ErrorMessage (Maybe WhereClause)
 statementClause afterWhere = do
-  case length afterWhere of
+  case Data.List.length afterWhere of
     0 -> do
       Right Nothing
     _ -> do
@@ -729,24 +739,24 @@ statementClause afterWhere = do
 
 tryParseWhereClause :: [String] -> Either ErrorMessage (Maybe WhereClause)
 tryParseWhereClause afterWhere
-  | isBoolIsTrueFalseClauseLike = case splitStatementToWhereIsClause (drop 1 afterWhere) of
+  | isBoolIsTrueFalseClauseLike = case splitStatementToWhereIsClause (Data.List.drop 1 afterWhere) of
     Left err -> Left err
     Right clause -> Right $ Just clause
-  | isAndClauseLike = case parseWhereAnd (drop 1 afterWhere) of
+  | isAndClauseLike = case parseWhereAnd (Data.List.drop 1 afterWhere) of
     Left err -> Left err
     Right clause -> Right $ Just clause
   | otherwise = Left "Failed to parse where clause. Where clause type not implemented or recognised. Please only use `where and` and `where bool is true/false`"
   where
-    afterWhereWithoutWhere = drop 1 afterWhere
-    (_, afterIs) = break (== "is") afterWhereWithoutWhere
-    firstElementIsColumn = not (null afterWhereWithoutWhere) && (length (wordsWhen (== '.') (head afterWhereWithoutWhere)) == 2)
-    isBoolIsTrueFalseClauseLike = length afterWhereWithoutWhere == 3 && length afterIs == 2 && (afterIs !! 1 == "false" || afterIs !! 1 == "true") && firstElementIsColumn
-    isAndClauseLike = null afterIs
+    afterWhereWithoutWhere = Data.List.drop 1 afterWhere
+    (_, afterIs) = Data.List.break (== "is") afterWhereWithoutWhere
+    firstElementIsColumn = not (Data.List.null afterWhereWithoutWhere) && (Data.List.length (wordsWhen (== '.') (Data.List.head afterWhereWithoutWhere)) == 2)
+    isBoolIsTrueFalseClauseLike = Data.List.length afterWhereWithoutWhere == 3 && Data.List.length afterIs == 2 && (afterIs !! 1 == "false" || afterIs !! 1 == "true") && firstElementIsColumn
+    isAndClauseLike = Data.List.null afterIs
 
 splitStatementToWhereIsClause :: [String] -> Either ErrorMessage WhereClause
-splitStatementToWhereIsClause [boolColName, "is", boolString] = Right $ IsValueBool parsedBoolString tableName $ init colName
+splitStatementToWhereIsClause [boolColName, "is", boolString] = Right $ IsValueBool parsedBoolString tableName $ Data.List.init colName
   where
-    (tableName, colName) = break (== '.') boolColName
+    (tableName, colName) = Data.List.break (== '.') boolColName
     parsedBoolString = boolString == "true"
 splitStatementToWhereIsClause _ = Left "Unsupported or invalid where bool is true false clause"
 
@@ -771,7 +781,7 @@ parseWhereAnd afterWhere
 
     getConditionList (condition1 : operator : condition2 : "and" : xs) = do
       conditionBase <- getCondition condition1 operator condition2
-      rest <- if not (null xs) then getConditionList xs else Right []
+      rest <- if not (Data.List.null xs) then getConditionList xs else Right []
       return $ conditionBase : rest
 
     getConditionList _ = Left "Error parsing where and clause"
@@ -779,31 +789,31 @@ parseWhereAnd afterWhere
 getConditionValue :: String -> Either ErrorMessage ConditionValue
 getConditionValue condition
   | isNumber condition = Right $ IntValue (read condition :: Integer)
-  | length condition > 2 && "'" `isPrefixOf` condition && "'" `isSuffixOf` condition = Right $ StrValue (drop 1 (init condition))
+  | Data.List.length condition > 2 && "'" `Data.List.isPrefixOf` condition && "'" `Data.List.isSuffixOf` condition = Right $ StrValue (Data.List.drop 1 (Data.List.init condition))
   | otherwise = Left "Error parsing condition value"
 
 getCondition :: String -> String -> String -> Either ErrorMessage Condition
 getCondition val1 op val2
-  | op == "=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ Equals (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == "=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1= Right $ Equals (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == ">" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThan (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == ">" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThan (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == "<" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessThan (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == "<" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessThan (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == ">=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThanOrEqual (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == ">=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThanOrEqual (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == "<=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessthanOrEqual (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == "<=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessthanOrEqual (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
-  | op == "<>" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ NotEqual (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
-  | op == "<>" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ NotEqual (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ Equals (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1= Right $ Equals (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == ">" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThan (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == ">" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThan (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "<" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessThan (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "<" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessThan (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == ">=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThanOrEqual (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == ">=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThanOrEqual (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "<=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessthanOrEqual (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "<=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessthanOrEqual (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "<>" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ NotEqual (TableColumn val1TableAb (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "<>" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ NotEqual (TableColumn val2TableAb (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
   | otherwise = Left "Error parsing where and condition. Only able to compare integer and string values with columns"
   where
-    (val1TableAb, val1Column) = break (=='.') val1
-    (val2TableAb, val2Column) = break (=='.') val2
+    (val1TableAb, val1Column) = Data.List.break (=='.') val1
+    (val2TableAb, val2Column) = Data.List.break (=='.') val2
     value1Type = parseType val1
     value2Type = parseType val2
-    val1HasDot = not (null (drop 1 val1Column))
-    val2HasDot = not (null (drop 1 val2Column))
+    val1HasDot = not (Data.List.null (Data.List.drop 1 val1Column))
+    val2HasDot = not (Data.List.null (Data.List.drop 1 val2Column))
     condition1 = getConditionValue val1
     condition2 = getConditionValue val2
     defaultCondition = StrValue "Kas skaitys tas gaidys (Isskyrus destytoja)"
@@ -824,20 +834,20 @@ matchesWhereAndPattern _ = False
 
 isWhereAndOperation :: String -> String -> String -> Bool
 isWhereAndOperation condition1 operator condition2
-  | elem operator [">", "<", "=", "<>", "<=", ">="] && (col1Valid || col2Valid) = True
+  | Data.List.elem operator [">", "<", "=", "<>", "<=", ">="] && (col1Valid || col2Valid) = True
   | otherwise = False
   where
-    (val1Table, val1Column) = break (== '.') condition1
-    (val2Table, val2Column) = break (== '.') condition2
-    val1ColumWithoutDot = drop 1 val1Column
-    val2ColumWithoutDot = drop 1 val2Column
-    col1Valid = not (null val1ColumWithoutDot) && not (null val1Table)
-    col2Valid = not (null val2ColumWithoutDot) && not (null val2Table)
+    (val1Table, val1Column) = Data.List.break (== '.') condition1
+    (val2Table, val2Column) = Data.List.break (== '.') condition2
+    val1ColumWithoutDot = Data.List.drop 1 val1Column
+    val2ColumWithoutDot = Data.List.drop 1 val2Column
+    col1Valid = not (Data.List.null val1ColumWithoutDot) && not (Data.List.null val1Table)
+    col2Valid = not (Data.List.null val2ColumWithoutDot) && not (Data.List.null val2Table)
 
 
 statementClause' :: [String] -> TableName -> Either ErrorMessage (Maybe WhereClause)
 statementClause' afterWhere tableName = do
-  case length afterWhere of
+  case Data.List.length afterWhere of
     0 -> do
       Right Nothing
     _ -> do
@@ -848,19 +858,19 @@ tryParseWhereClause' afterWhere tableName
   | isBoolIsTrueFalseClauseLike = case splitStatementToWhereIsClause' afterWhere tableName of
     Left err -> Left err
     Right clause -> Right $ Just clause
-  | isAndClauseLike = case parseWhereAnd' (drop 1 afterWhere) tableName of
+  | isAndClauseLike = case parseWhereAnd' (Data.List.drop 1 afterWhere) tableName of
     Left err -> Left err
     Right clause -> Right $ Just clause
   | otherwise = Left "Failed to parse where clause. Where clause type not implemented or recognised. Please only use `where and` and `where bool is true/false`"
   where
-    afterWhereWithoutWhere = drop 1 afterWhere
-    (_, afterIs) = break (== "is") afterWhereWithoutWhere
-    firstElementIsColumn = not (null afterWhereWithoutWhere) && (length (wordsWhen (== '.') (head afterWhereWithoutWhere)) == 1)
-    isBoolIsTrueFalseClauseLike = length afterWhereWithoutWhere == 3 && length afterIs == 2 && (afterIs !! 1 == "false" || afterIs !! 1 == "true") && firstElementIsColumn
-    isAndClauseLike = null afterIs
+    afterWhereWithoutWhere = Data.List.drop 1 afterWhere
+    (_, afterIs) = Data.List.break (== "is") afterWhereWithoutWhere
+    firstElementIsColumn = not (Data.List.null afterWhereWithoutWhere) && (Data.List.length (wordsWhen (== '.') (Data.List.head afterWhereWithoutWhere)) == 1)
+    isBoolIsTrueFalseClauseLike = Data.List.length afterWhereWithoutWhere == 3 && Data.List.length afterIs == 2 && (afterIs !! 1 == "false" || afterIs !! 1 == "true") && firstElementIsColumn
+    isAndClauseLike = Data.List.null afterIs
 
 splitStatementToWhereIsClause' :: [String] -> TableName -> Either ErrorMessage WhereClause
-splitStatementToWhereIsClause' [boolColName, "is", boolString] tableName = Right $ IsValueBool parsedBoolString tableName $ init boolColName
+splitStatementToWhereIsClause' [boolColName, "is", boolString] tableName = Right $ IsValueBool parsedBoolString tableName $ Data.List.init boolColName
   where
     parsedBoolString = boolString == "true"
 splitStatementToWhereIsClause' _ _ = Left "Unsupported or invalid where bool is true false clause"
@@ -886,7 +896,7 @@ parseWhereAnd' afterWhere tableName
 
     getConditionList (condition1 : operator : condition2 : "and" : xs) tableName'' = do
       conditionBase <- getCondition' condition1 operator condition2 tableName''
-      rest <- if not (null xs) then getConditionList xs tableName'' else Right []
+      rest <- if not (Data.List.null xs) then getConditionList xs tableName'' else Right []
       return $ conditionBase : rest
 
     getConditionList _ _ = Left "Error parsing where and clause"
@@ -894,7 +904,7 @@ parseWhereAnd' afterWhere tableName
 getConditionValue' :: String -> Either ErrorMessage ConditionValue
 getConditionValue' condition
   | isNumber condition = Right $ IntValue (read condition :: Integer)
-  | length condition > 2 && "'" `isPrefixOf` condition && "'" `isSuffixOf` condition = Right $ StrValue (drop 1 (init condition))
+  | Data.List.length condition > 2 && "'" `Data.List.isPrefixOf` condition && "'" `Data.List.isSuffixOf` condition = Right $ StrValue (Data.List.drop 1 (Data.List.init condition))
   | otherwise = Left "Error parsing condition value"
 
 getCondition' :: String -> String -> String -> TableName -> Either ErrorMessage Condition
@@ -935,36 +945,36 @@ matchesWhereAndPattern' _ = False
 
 isWhereAndOperation' :: String -> String -> String -> Bool
 isWhereAndOperation' condition1 operator condition2
-  | elem operator [">", "<", "=", "<>", "<=", ">="] && (col1Valid || col2Valid) = True
+  | Data.List.elem operator [">", "<", "=", "<>", "<=", ">="] && (col1Valid || col2Valid) = True
   | otherwise = False
   where
-    col1Valid = not (null condition1)
-    col2Valid = not (null condition2)
+    col1Valid = not (Data.List.null condition1)
+    col2Valid = not (Data.List.null condition2)
 
 parseType :: String -> Maybe ColumnType
 parseType str
   | isNumber str = Just IntegerType
-  | "'" `isPrefixOf` str && "'" `isSuffixOf` str = Just StringType
+  | "'" `Data.List.isPrefixOf` str && "'" `Data.List.isSuffixOf` str = Just StringType
   | otherwise = Nothing
 
 isNumber :: String -> Bool
 isNumber "" = False
 isNumber xs =
-  case dropWhile isDigit xs of
+  case Data.List.dropWhile isDigit xs of
     "" -> True
     _ -> False
 
 parseSemiCaseSensitive :: String -> [String]
 parseSemiCaseSensitive statement = convertedStatement
   where
-    splitStatement = words statement
-    convertedStatement = map wordToLowerSensitive splitStatement
+    splitStatement = Data.List.words statement
+    convertedStatement = Data.List.map wordToLowerSensitive splitStatement
 
 wordToLowerSensitive :: String -> String
 wordToLowerSensitive word
-  | map toLower word `elem` keywords = map toLower word
-  | "avg(" `isPrefixOf` map toLower word && ")" `isSuffixOf` word = "avg(" ++ drop 4 (init word) ++ ")"
-  | "max(" `isPrefixOf` map toLower word && ")" `isSuffixOf` word = "max(" ++ drop 4 (init word) ++ ")"
+  | Data.List.map Data.Char.toLower word `Data.List.elem` keywords = Data.List.map Data.Char.toLower word
+  | "avg(" `Data.List.isPrefixOf` Data.List.map Data.Char.toLower word && ")" `Data.List.isSuffixOf` word = "avg(" ++ Data.List.drop 4 (Data.List.init word) ++ ")"
+  | "max(" `Data.List.isPrefixOf` Data.List.map Data.Char.toLower word && ")" `Data.List.isSuffixOf` word = "max(" ++ Data.List.drop 4 (Data.List.init word) ++ ")"
   | otherwise = word
   where
     keywords = ["select", "from", "where", "show", "table", "tables", "false", "true", "and", "is", "insert", "delete", "update", "set", "into"]
