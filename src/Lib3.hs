@@ -301,3 +301,670 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
     convertValue (StringValue s) = Y.String (T.pack s)
     convertValue (BoolValue b) = Y.Bool b
     convertValue NullValue = Y.Null
+
+
+-- ONLY SQL PARSER BELOW
+
+parseStatement :: String  -> Either ErrorMessage ParsedStatement
+parseStatement input
+  | last input /= ';' = Left "Missing semicolon at end of statement"
+  | otherwise = mapStatementType wordsInput
+  where
+    cleanedInput = init input
+    wordsInput = parseSemiCaseSensitive cleanedInput
+
+mapStatementType :: [String] -> Either ErrorMessage ParsedStatement
+mapStatementType statement = do
+  statementType <- guessStatementType statement
+  case statementType of
+      Select -> do
+        parseSelect (drop 1 statement)
+      Insert -> do
+        parseInsert statement
+      Delete -> do
+        parseDelete statement
+      Update -> do
+        parseUpdate statement
+      ShowTable -> do
+        parseShowTable statement
+      ShowTables -> do
+        parseShowTables statement
+      InvalidStatement -> do
+        Left "Invalid statement"
+
+guessStatementType :: [String] -> Either ErrorMessage StatementType
+guessStatementType (x : y : _)
+  | x == "select" = Right Select
+  | x == "insert" && y == "into" = Right Insert
+  | x == "delete" && y == "from" = Right Delete
+  | x == "update" = Right Update
+  | x == "show" && y == "table" = Right ShowTable
+  | x == "show" && y == "tables" = Right ShowTables
+  | otherwise = Left "Sql statement does not resemble any sort of implemented statement"
+
+guessStatementType _ = Left "Sql statement does not resemble any sort of implemented statement"
+
+parseInsert :: [String] -> Either ErrorMessage ParsedStatement
+parseInsert statement = do
+  tableName <- getInsertTableName statement
+  getInsertColumns statement tableName
+
+getInsertTableName :: [String] -> Either ErrorMessage TableName
+getInsertTableName statement = do
+  (_, intoAndAfter) <- Right $ break (== "into") statement
+  tableToInsertInto <- Right $ drop 1 intoAndAfter
+  if not (null tableToInsertInto) && isValidTable (head tableToInsertInto)
+      then Right $ head tableToInsertInto
+      else Left "Update statement table name does not meet requirements. Maybe ilegal characters were used?"
+
+getInsertColumns :: [String] -> TableName -> Either ErrorMessage ParsedStatement
+getInsertColumns statement tableName = do
+  (_, intoAndAfter) <- Right $ break (== "into") statement
+  (intoToValues, valuesAndAfter) <- Right $ break (== "values") intoAndAfter
+  cleanedValues <- cleanInsertHeadAndTail (drop 1 valuesAndAfter)
+  columnNames <- getColumnNames $ drop 2 intoToValues
+  columnValues <- getInsertColumnValues cleanedValues
+  columns <-
+    if length columnNames /= length columnValues
+      then Left "Column count does not match value count in insert statement"
+      else Right $ map (TableColumn tableName) columnNames
+  getInsertStatement tableName columns columnValues
+
+getInsertStatement :: TableName -> [SelectColumn] -> [Value] -> Either ErrorMessage ParsedStatement
+getInsertStatement tableName columns values = Right $ InsertStatement tableName columns values
+
+getInsertColumnValues :: [String] -> Either ErrorMessage [Value]
+getInsertColumnValues [value] = do
+  val <- getValueFromString value
+  return [val]
+
+getInsertColumnValues (value : xs) = do
+  cleanedString <- if last value == ',' then Right $ init value else Left "Failed to parse INSERT values"
+  val <- getValueFromString cleanedString
+  rest <- getInsertColumnValues xs
+  return $ rest ++ [val]
+
+getInsertColumnValues _ = Left "Error parsing insert statement values"
+
+getColumnNames :: [String] -> Either ErrorMessage [String]
+getColumnNames rawNames = do
+  cleanedHeadAndTail <- cleanInsertHeadAndTail rawNames
+  cleanInsertCommas cleanedHeadAndTail
+
+cleanInsertHeadAndTail :: [String] -> Either ErrorMessage [String]
+cleanInsertHeadAndTail input =
+  if not (null input) && head (head input) == '(' && last (last input) == ')'
+    then
+      if length input == 1
+        then Right [drop 1 (init (head input))]
+        else Right $ [drop 1 (head input)] ++ init (drop 1 input) ++ [init (last input)]
+    else Left "formating of insert statement does not meet requirements. Most likely issing `(` or `)`"
+
+cleanInsertCommas :: [String] -> Either ErrorMessage [String]
+cleanInsertCommas [column] =
+  if isValidColumnWithoutAb column
+    then Right [column]
+    else Left $ "Column" ++ " `" ++ column ++ "` " ++ "contains ilegal characters"
+
+cleanInsertCommas (column : xs) = do
+  currentColumn <-
+    if last column == ',' && isValidColumnWithoutAb column
+      then Right $ init column
+      else Left "Missing comma or invalid column name for insert statement"
+  rest <- cleanInsertCommas xs
+  return $ rest ++ [currentColumn]
+
+cleanInsertCommas _ = Left "Unknown error parsing columns in insert statement"
+
+getInsertValues :: [String] -> Int -> Either ErrorMessage [Value]
+getInsertValues _ _ = Left "Not implemented getInsertValues"
+
+getParsedStatement :: TableName -> [SelectColumn] -> [Value] -> Either ErrorMessage ParsedStatement
+getParsedStatement _ _ _ = Left "Not implemented getParsedStatement"
+
+parseDelete :: [String] -> Either ErrorMessage ParsedStatement
+parseDelete statement = do
+  tableName <- getTableNameFromDelete statement
+  (_, fromWhere) <- Right $ break (== "where") statement
+  whereClause <- statementClause' fromWhere tableName
+  getDeleteStatement tableName whereClause
+
+getDeleteStatement :: TableName -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
+getDeleteStatement tableName whereClause = Right $ DeleteStatement tableName whereClause
+
+getTableNameFromDelete :: [String] -> Either ErrorMessage TableName
+getTableNameFromDelete statement = do
+  (_, fromAndElse) <- Right $ break (== "from") statement
+  (fromToWhere, _) <- Right $ break (== "where") fromAndElse
+  if length fromToWhere /= 2 || not (isValidTable (last fromToWhere))
+      then Left $ "Invalid delete statement table name: " ++ last fromToWhere
+      else Right $ last fromToWhere
+
+
+parseUpdate :: [String] -> Either ErrorMessage ParsedStatement
+parseUpdate statement = do
+  (_, afterWhere) <- Right $ break (== "where") statement
+  tableName <- getUpdateTableName statement
+  columnAndNewValueString <- getColumnAndNewValueStringsForUpdate statement
+  selectedColumns <- getSelectedColumnsForUpdate columnAndNewValueString tableName
+  updateValues <- getValuesToUpdate columnAndNewValueString
+  whereClause <- statementClause' afterWhere tableName
+  getUpdateStatement tableName selectedColumns updateValues whereClause
+
+-- Why did I use `do` here? Well... Thats a good question that I don't know the answer to
+getUpdateTableName :: [String] -> Either ErrorMessage TableName
+getUpdateTableName statement = do
+  (beforeSet, _) <- Right $ break (== "set") statement
+  tableToUpdate <- Right $ drop 1 beforeSet
+  if isUpdateTableNameValid tableToUpdate
+      then Right $ head tableToUpdate
+      else Left "Update statement table name does not meet requirements. Maybe ilegal characters were used?"
+
+isUpdateTableNameValid :: [String] -> Bool
+isUpdateTableNameValid table = length table == 1 && isValidTable (head table)
+
+getColumnAndNewValueStringsForUpdate :: [String] -> Either ErrorMessage [String]
+getColumnAndNewValueStringsForUpdate updateStatement = do
+  (_, setAndAfter) <- Right $ break (== "set") updateStatement
+  (fromSetToWhere, _) <- Right $ break (== "where") setAndAfter
+  cleanedFromSetToWhere <- Right $ cleanLastComma fromSetToWhere
+  Right $ drop 1 cleanedFromSetToWhere
+
+cleanLastComma :: [String] -> [String]
+cleanLastComma = map (\str -> if last str == ',' then init str else str)
+
+getSelectedColumnsForUpdate :: [String] -> TableName -> Either ErrorMessage [SelectColumn]
+getSelectedColumnsForUpdate [val1, op, val2] tableName = do
+  baseColumn <- getValidUpdateColumn val1 op val2 tableName
+  return [baseColumn]
+
+getSelectedColumnsForUpdate (val1 : op : val2 : xs) tableName = do
+  baseColumn <- getValidUpdateColumn val1 op val2 tableName
+  rest <- getSelectedColumnsForUpdate xs tableName
+  return $ rest ++ [baseColumn]
+
+getSelectedColumnsForUpdate _ _ = Left "Invalid column formating for UPDATE statement"
+
+getValidUpdateColumn :: String -> String -> String -> TableName -> Either ErrorMessage SelectColumn
+getValidUpdateColumn val1 op val2 tableName
+  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || ("'" `isPrefixOf` val2 && "'" `isSuffixOf` val2 )) = Right $ TableColumn tableName val1
+  | otherwise = Left "Unable to update table do to bad update statement. Failed to parse new column values"
+
+checkIfDoesNotContainSpecialSymbols :: String -> Bool
+checkIfDoesNotContainSpecialSymbols val1 = notElem '\'' val1 && notElem '.' val1 && notElem '(' val1 && notElem ')' val1
+
+getValuesToUpdate :: [String] -> Either ErrorMessage [Value]
+getValuesToUpdate [val1, op, val2] = do
+  baseColumn <- getValidUpdateValue val1 op val2
+  return [baseColumn]
+
+getValuesToUpdate (val1 : op : val2 : xs) = do
+  baseColumn <- getValidUpdateValue val1 op val2
+  rest <- getValuesToUpdate xs
+  return $ rest ++ [baseColumn]
+
+getValuesToUpdate _  = Left "Invalid column formating for UPDATE statement"
+
+getValidUpdateValue :: String -> String -> String -> Either ErrorMessage Value
+getValidUpdateValue val1 op val2
+  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || ("'" `isPrefixOf` val2 && "'" `isSuffixOf` val2 )) = getValueFromString val2
+  | otherwise = Left "Unable to update table do to bad update statement. Failed to parse columns to be updated"
+
+getValueFromString :: String -> Either ErrorMessage Value
+getValueFromString valueString
+  | valueString == "true" = Right $ BoolValue True
+  | valueString == "false" = Right $ BoolValue False
+  | isNumber valueString = Right $ IntegerValue (read valueString :: Integer)
+  | "'" `isPrefixOf` valueString && "'" `isSuffixOf` valueString = Right $ StringValue $ drop 1 (init valueString)
+  | otherwise = Left "Failed to parse UPDATE statement value. Only string, integer and bool values allowed"
+
+getUpdateStatement :: TableName -> [SelectColumn] -> Row -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
+getUpdateStatement tableName selectedColumns rows whereClause = Right $ UpdateStatement tableName selectedColumns rows whereClause
+
+
+parseShowTables :: [String] -> Either ErrorMessage ParsedStatement
+parseShowTables ["show", "tables"] = Right ShowTablesStatement
+parseShowTables _ = Left "Failed to parse SHOW TABLES statement"
+
+parseShowTable :: [String] -> Either ErrorMessage ParsedStatement
+parseShowTable ["show", "table", tableName] = do
+  if isValidTable tableName
+    then do
+      return $ ShowTableStatement tableName
+    else do
+      Left $ "SHOW TABLE table name contains ilegal characters"++ " " ++ tableName
+
+parseShowTable _ = Left "Failed to parse SHOW TABLE statement"
+
+isValidTable :: String -> Bool
+isValidTable originalName
+  | "'" `isPrefixOf` originalName || "'" `isSuffixOf` originalName || "avg(" `isPrefixOf` originalName || "max(" `isPrefixOf` originalName || ")" `isSuffixOf` originalName = False
+  | otherwise = True
+
+parseSelect :: [String] -> Either ErrorMessage ParsedStatement
+parseSelect statement = do
+  tableNamesAndAb <- getTableNamesAndAb statement
+  (beforeWhere, afterWhere) <- Right $ break (== "where") statement
+  (beforeFrom, _) <- Right $ break (== "from") beforeWhere
+  whereClause <- statementClause afterWhere
+  selectType <- getSelectType beforeFrom
+  tableNames <- Right $ map fst tableNamesAndAb
+  case selectType of
+    Aggregate -> do
+      aggregateColumns <- getAggregateColumns beforeFrom tableNamesAndAb
+      parseAggregate tableNames whereClause aggregateColumns
+    ColumnsAndTime -> do
+      columnsWithTableAb <- getColumnWithTableAb statement tableNamesAndAb
+      parseColumnsSelect tableNames columnsWithTableAb whereClause
+    AllColumns -> do
+      parseAllColumns tableNames whereClause
+
+castEither :: a -> Either ErrorMessage a -> a
+castEither defaultValue eitherValue = case eitherValue of
+  Right val -> val
+  Left _ -> defaultValue
+
+getAggregateColumns :: [String] -> [(TableName, String)] -> Either ErrorMessage [SelectColumn]
+getAggregateColumns [baseColumn] tableNames = do
+  parsedAggregate <- parseAggregateColumn baseColumn tableNames
+  return [parsedAggregate]
+getAggregateColumns (baseColumn : xs) tableNames = do
+  baseAggregate <- parseAggregateColumn baseColumn tableNames
+  rest <- getAggregateColumns xs tableNames
+  return $ baseAggregate : rest
+getAggregateColumns _ _ = Left "Error parsing aggregate columns"
+
+parseAggregateColumn :: String -> [(TableName, String)] -> Either ErrorMessage SelectColumn
+parseAggregateColumn column tableNames
+  | isValid && "avg(" `isPrefixOf` column && ")" `isSuffixOf` column = Right $ Avg tableAb columnName
+  | isValid && "max(" `isPrefixOf` column && ")" `isSuffixOf` column = Right $ Max tableAb columnName
+  | otherwise = Left $ "Failed to parse aggregate column" ++ column
+    where
+      removedAggregate = drop 4 (init column)
+      [tableAb, columnName] = wordsWhen (== '.') removedAggregate
+      isValid = findIfTupleWithSndElemEqualToExists tableAb tableNames
+
+findIfTupleWithSndElemEqualToExists :: Eq a => a -> [(b, a)] -> Bool
+findIfTupleWithSndElemEqualToExists _ [] = False;
+findIfTupleWithSndElemEqualToExists val [(_, sndVal)] = val == sndVal
+findIfTupleWithSndElemEqualToExists val ((_, sndVal) : xs) = (val == sndVal) || findIfTupleWithSndElemEqualToExists val xs
+
+
+getTableNamesAndAb :: [String] -> Either ErrorMessage [(TableName, String)]
+getTableNamesAndAb statement = names
+  where
+    (_, afterFrom) = break (== "from") statement
+    (tables, _) = break (== "where") afterFrom
+    dropedTable = drop 1 tables
+    len = length dropedTable
+
+    names
+      | even len && len > 0 = splitIntoTuples dropedTable
+      | otherwise = Left "Invalid table formating in statement. Maybe table abbreviation was not provided?"
+
+-- Look into and fix check if all columns ar valid. Will do for now because of deadline but this method is shit
+getColumnWithTableAb :: [String] -> [(TableName, String)] -> Either ErrorMessage [(String, String)]
+getColumnWithTableAb statement tableNames = do
+  (beforeFrom, _) <- Right $ break (== "from") statement
+  columnAndAbList <- Right $ getListOfTableAbAndColumn beforeFrom
+  isValidColumnNames <- Right $ all isValidColumn beforeFrom
+  if null columnAndAbList || odd (length columnAndAbList) || not isValidColumnNames
+    then do
+      Left $ "error parsing columns. Maybe table name abbreviation was not provided? : " ++ head columnAndAbList 
+    else do
+      splitList <- splitIntoTuples columnAndAbList
+      getCorrectTableAndColumns splitList tableNames
+
+getCorrectTableAndColumns :: [(String, String)] -> [(String, String)] -> Either ErrorMessage [(String, String)]
+
+getCorrectTableAndColumns [columnAndTableAb] tableNames = do
+  tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
+  return [(tableName, snd columnAndTableAb)]
+
+getCorrectTableAndColumns (columnAndTableAb : xs) tableNames = do
+  tableExists <- Right $ findIfTupleWithSndElemEqualToExists (snd columnAndTableAb) tableNames
+  if tableExists
+    then do
+      tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
+      rest <- getCorrectTableAndColumns xs tableNames
+      return $ (tableName, snd columnAndTableAb) : rest
+    else
+      getCorrectTableAndColumns xs tableNames
+
+getCorrectTableAndColumns _ _ = Left "Something went wrong when trying to find match for table abbreviation"
+
+getFstTupleElemBySndElemInList :: Eq a => (a, b) -> [(c, a)] -> Either ErrorMessage c
+
+getFstTupleElemBySndElemInList  (val1, _) [(val3, val2)] = if val1 == val2 then Right val3 else Left "Failed to find table name that matches one of the abbriviations"
+
+getFstTupleElemBySndElemInList val1 (x : xs) = do
+  let isMatch (src, _) (_, src') = src == src'
+  isFirstMatch <- Right $ isMatch val1 x
+  if isFirstMatch
+    then Right $ fst x
+    else getFstTupleElemBySndElemInList val1 xs
+
+getFstTupleElemBySndElemInList _ _ = Left "Failed to find valid table that matches table abbreviation"
+
+
+getListOfTableAbAndColumn :: [String] -> [String]
+getListOfTableAbAndColumn [] = []
+getListOfTableAbAndColumn [abAndColumn] = wordsWhen (== '.') abAndColumn
+getListOfTableAbAndColumn (abAndColumn : xs) = wordsWhen (== '.') abAndColumn ++ getListOfTableAbAndColumn xs
+
+
+wordsWhen :: (Char -> Bool) -> String -> [String]
+wordsWhen p s = case dropWhile p s of
+  "" -> []
+  s' -> w : wordsWhen p s''
+        where (w, s'') = break p s'
+
+
+splitIntoTuples :: [String] -> Either ErrorMessage [(String, String)]
+splitIntoTuples [x, y] = Right [(x, y)]
+splitIntoTuples (x : y : xs) = do
+  baseTuple <- Right (x, y)
+  rest <- splitIntoTuples xs
+  return $ baseTuple : rest
+splitIntoTuples list = Left $ "Error parsing tables or columns. Maybe table abbreviation was not provided?" ++ concat list
+
+parseAggregate :: [TableName] -> Maybe WhereClause -> [SelectColumn] -> Either ErrorMessage ParsedStatement
+parseAggregate tableNames whereClause columns = Right $ SelectAggregate tableNames columns whereClause
+
+-- ignores commas in columns
+parseColumnsSelect :: [TableName] -> [(String, String)] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
+parseColumnsSelect tables columns whereClause = Right $ SelectColumns tables (map (uncurry TableColumn) columns) whereClause
+
+parseAllColumns :: [TableName] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
+parseAllColumns tableNames whereClause = Right $ SelectAll tableNames whereClause
+
+getSelectType :: [String] -> Either ErrorMessage SelectType
+getSelectType selectColumns
+  | hasAllValidAggregates selectColumns = Right Aggregate
+  | hasAllValidColumns selectColumns = Right ColumnsAndTime
+  | isValidSelectAll selectColumns = Right AllColumns
+  | otherwise = Left "Error parsing select type. Maybe invalid table abbreviation was used or an invalid query was given"
+
+isValidSelectAll :: [String] -> Bool
+isValidSelectAll selectColumns
+  | length selectColumns == 1 && head selectColumns == "*" = True
+  | otherwise = False
+
+hasAllValidColumns :: [String] -> Bool
+hasAllValidColumns [] = False
+hasAllValidColumns [column] = isValidColumn column
+hasAllValidColumns (column : xs) = isValidColumn column && hasAllValidColumns xs
+
+isValidColumn :: String -> Bool
+isValidColumn column = isSplitByDot && isNotAggregate && hasNoParenthesies || column == "now()"
+  where
+    (beforeDot, afterDot) = break (== '.') column
+    isSplitByDot = not (null beforeDot) && not (null afterDot) && (length afterDot > 1)
+    isNotAggregate = not $ isAggregate column
+    hasNoParenthesies = not ("'" `isPrefixOf` column || "'" `isSuffixOf` column)
+
+isValidColumnWithoutAb :: String -> Bool
+isValidColumnWithoutAb column = isNotAggregate && hasNoParenthesies || column == "now()"
+  where
+    isNotAggregate = not $ "avg(" `isPrefixOf` column || "max(" `isPrefixOf` column || "'" `isSuffixOf` column
+    hasNoParenthesies = not ("'" `isPrefixOf` column || "'" `isSuffixOf` column)
+
+hasAllValidAggregates :: [String] -> Bool
+hasAllValidAggregates [] = False
+hasAllValidAggregates [column] = isAggregate column
+hasAllValidAggregates (column : xs) = isAggregate column && hasAllValidAggregates xs
+
+isAggregate :: String -> Bool
+isAggregate column
+  | ("max(" `isPrefixOf` column || "avg(" `isPrefixOf` column) && ")" `isSuffixOf` column && isValidColumn (drop 4 (init column)) = True
+  | otherwise = False
+
+statementClause :: [String] -> Either ErrorMessage (Maybe WhereClause)
+statementClause afterWhere = do
+  case length afterWhere of
+    0 -> do
+      Right Nothing
+    _ -> do
+      tryParseWhereClause afterWhere
+
+tryParseWhereClause :: [String] -> Either ErrorMessage (Maybe WhereClause)
+tryParseWhereClause afterWhere
+  | isBoolIsTrueFalseClauseLike = case splitStatementToWhereIsClause (drop 1 afterWhere) of
+    Left err -> Left err
+    Right clause -> Right $ Just clause
+  | isAndClauseLike = case parseWhereAnd (drop 1 afterWhere) of
+    Left err -> Left err
+    Right clause -> Right $ Just clause
+  | otherwise = Left "Failed to parse where clause. Where clause type not implemented or recognised. Please only use `where and` and `where bool is true/false`"
+  where
+    afterWhereWithoutWhere = drop 1 afterWhere
+    (_, afterIs) = break (== "is") afterWhereWithoutWhere
+    firstElementIsColumn = not (null afterWhereWithoutWhere) && (length (wordsWhen (== '.') (head afterWhereWithoutWhere)) == 2)
+    isBoolIsTrueFalseClauseLike = length afterWhereWithoutWhere == 3 && length afterIs == 2 && (afterIs !! 1 == "false" || afterIs !! 1 == "true") && firstElementIsColumn
+    isAndClauseLike = null afterIs
+
+splitStatementToWhereIsClause :: [String] -> Either ErrorMessage WhereClause
+splitStatementToWhereIsClause [boolColName, "is", boolString] = Right $ IsValueBool parsedBoolString tableName $ init colName
+  where
+    (tableName, colName) = break (== '.') boolColName
+    parsedBoolString = boolString == "true"
+splitStatementToWhereIsClause _ = Left "Unsupported or invalid where bool is true false clause"
+
+
+parseWhereAnd :: [String] -> Either ErrorMessage WhereClause
+parseWhereAnd afterWhere
+  | matchesWhereAndPattern afterWhere = splitStatementToAndClause afterWhere
+  | otherwise = Left "Unable to parse where and clause"
+  where
+    splitStatementToAndClause :: [String] -> Either ErrorMessage WhereClause
+    splitStatementToAndClause strList = do
+      conditionList <- getConditionList strList
+      getConditions conditionList
+
+    getConditions :: [Condition] -> Either ErrorMessage WhereClause
+    getConditions conditions = Right $ Conditions conditions
+
+    getConditionList :: [String] -> Either ErrorMessage [Condition]
+    getConditionList [condition1, operator, condition2] = do
+      condition <- getCondition condition1 operator condition2
+      return [condition]
+
+    getConditionList (condition1 : operator : condition2 : "and" : xs) = do
+      conditionBase <- getCondition condition1 operator condition2
+      rest <- if not (null xs) then getConditionList xs else Right []
+      return $ conditionBase : rest
+
+    getConditionList _ = Left "Error parsing where and clause"
+
+getConditionValue :: String -> Either ErrorMessage ConditionValue
+getConditionValue condition
+  | isNumber condition = Right $ IntValue (read condition :: Integer)
+  | length condition > 2 && "'" `isPrefixOf` condition && "'" `isSuffixOf` condition = Right $ StrValue (drop 1 (init condition))
+  | otherwise = Left "Error parsing condition value"
+
+getCondition :: String -> String -> String -> Either ErrorMessage Condition
+getCondition val1 op val2
+  | op == "=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ Equals (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1= Right $ Equals (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == ">" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThan (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == ">" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThan (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "<" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessThan (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "<" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessThan (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == ">=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThanOrEqual (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == ">=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThanOrEqual (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "<=" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessthanOrEqual (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "<=" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessthanOrEqual (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
+  | op == "<>" && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ NotEqual (TableColumn val1TableAb (drop 1 val1Column)) $ castEither defaultCondition condition2
+  | op == "<>" && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1 = Right $ NotEqual (TableColumn val2TableAb (drop 1 val2Column)) $ castEither defaultCondition condition1
+  | otherwise = Left "Error parsing where and condition. Only able to compare integer and string values with columns"
+  where
+    (val1TableAb, val1Column) = break (=='.') val1
+    (val2TableAb, val2Column) = break (=='.') val2
+    value1Type = parseType val1
+    value2Type = parseType val2
+    val1HasDot = not (null (drop 1 val1Column))
+    val2HasDot = not (null (drop 1 val2Column))
+    condition1 = getConditionValue val1
+    condition2 = getConditionValue val2
+    defaultCondition = StrValue "Kas skaitys tas gaidys (Isskyrus destytoja)"
+
+    isCondition1 = case condition1 of
+      Right _ -> True
+      Left _ -> False
+
+    isCondition2 = case condition2 of
+      Right _ -> True
+      Left _ -> False
+
+
+matchesWhereAndPattern :: [String] -> Bool
+matchesWhereAndPattern [condition1, operator, condition2] = isWhereAndOperation condition1 operator condition2
+matchesWhereAndPattern (condition1 : operator : condition2 : andString : xs) = matchesWhereAndPattern [condition1, operator, condition2] && andString == "and" && matchesWhereAndPattern xs
+matchesWhereAndPattern _ = False
+
+isWhereAndOperation :: String -> String -> String -> Bool
+isWhereAndOperation condition1 operator condition2
+  | elem operator [">", "<", "=", "<>", "<=", ">="] && (col1Valid || col2Valid) = True
+  | otherwise = False
+  where
+    (val1Table, val1Column) = break (== '.') condition1
+    (val2Table, val2Column) = break (== '.') condition2
+    val1ColumWithoutDot = drop 1 val1Column
+    val2ColumWithoutDot = drop 1 val2Column
+    col1Valid = not (null val1ColumWithoutDot) && not (null val1Table)
+    col2Valid = not (null val2ColumWithoutDot) && not (null val2Table)
+
+
+statementClause' :: [String] -> TableName -> Either ErrorMessage (Maybe WhereClause)
+statementClause' afterWhere tableName = do
+  case length afterWhere of
+    0 -> do
+      Right Nothing
+    _ -> do
+      tryParseWhereClause' afterWhere tableName
+
+tryParseWhereClause' :: [String] -> TableName -> Either ErrorMessage (Maybe WhereClause)
+tryParseWhereClause' afterWhere tableName
+  | isBoolIsTrueFalseClauseLike = case splitStatementToWhereIsClause' afterWhere tableName of
+    Left err -> Left err
+    Right clause -> Right $ Just clause
+  | isAndClauseLike = case parseWhereAnd' (drop 1 afterWhere) tableName of
+    Left err -> Left err
+    Right clause -> Right $ Just clause
+  | otherwise = Left "Failed to parse where clause. Where clause type not implemented or recognised. Please only use `where and` and `where bool is true/false`"
+  where
+    afterWhereWithoutWhere = drop 1 afterWhere
+    (_, afterIs) = break (== "is") afterWhereWithoutWhere
+    firstElementIsColumn = not (null afterWhereWithoutWhere) && (length (wordsWhen (== '.') (head afterWhereWithoutWhere)) == 1)
+    isBoolIsTrueFalseClauseLike = length afterWhereWithoutWhere == 3 && length afterIs == 2 && (afterIs !! 1 == "false" || afterIs !! 1 == "true") && firstElementIsColumn
+    isAndClauseLike = null afterIs
+
+splitStatementToWhereIsClause' :: [String] -> TableName -> Either ErrorMessage WhereClause
+splitStatementToWhereIsClause' [boolColName, "is", boolString] tableName = Right $ IsValueBool parsedBoolString tableName $ init boolColName
+  where
+    parsedBoolString = boolString == "true"
+splitStatementToWhereIsClause' _ _ = Left "Unsupported or invalid where bool is true false clause"
+
+
+parseWhereAnd' :: [String] -> TableName -> Either ErrorMessage WhereClause
+parseWhereAnd' afterWhere tableName
+  | matchesWhereAndPattern' afterWhere = splitStatementToAndClause afterWhere tableName
+  | otherwise = Left "Unable to parse where and clause"
+  where
+    splitStatementToAndClause :: [String] -> TableName -> Either ErrorMessage WhereClause
+    splitStatementToAndClause strList tableName' = do
+      conditionList <- getConditionList strList tableName'
+      getConditions conditionList
+
+    getConditions :: [Condition] -> Either ErrorMessage WhereClause
+    getConditions conditions = Right $ Conditions conditions
+
+    getConditionList :: [String] -> TableName -> Either ErrorMessage [Condition]
+    getConditionList [condition1, operator, condition2] tableName'' = do
+      condition <- getCondition' condition1 operator condition2 tableName''
+      return [condition]
+
+    getConditionList (condition1 : operator : condition2 : "and" : xs) tableName'' = do
+      conditionBase <- getCondition' condition1 operator condition2 tableName''
+      rest <- if not (null xs) then getConditionList xs tableName'' else Right []
+      return $ conditionBase : rest
+
+    getConditionList _ _ = Left "Error parsing where and clause"
+
+getConditionValue' :: String -> Either ErrorMessage ConditionValue
+getConditionValue' condition
+  | isNumber condition = Right $ IntValue (read condition :: Integer)
+  | length condition > 2 && "'" `isPrefixOf` condition && "'" `isSuffixOf` condition = Right $ StrValue (drop 1 (init condition))
+  | otherwise = Left "Error parsing condition value"
+
+getCondition' :: String -> String -> String -> TableName -> Either ErrorMessage Condition
+getCondition' val1 op val2 tableName
+  | op == "=" && isJust value2Type && isNothing value1Type && isCondition2 = Right $ Equals (TableColumn tableName val1) $ castEither defaultCondition condition2
+  | op == "=" && isJust value1Type && isNothing value2Type && isCondition1= Right $ Equals (TableColumn tableName val2) $ castEither defaultCondition condition1
+  | op == ">" && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThan (TableColumn tableName val1) $ castEither defaultCondition condition2
+  | op == ">" && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThan (TableColumn tableName val2) $ castEither defaultCondition condition1
+  | op == "<" && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessThan (TableColumn tableName val1) $ castEither defaultCondition condition2
+  | op == "<" && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessThan (TableColumn tableName val2) $ castEither defaultCondition condition1
+  | op == ">=" && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThanOrEqual (TableColumn tableName val1) $ castEither defaultCondition condition2
+  | op == ">=" && isJust value1Type && isNothing value2Type && isCondition1 = Right $ GreaterThanOrEqual (TableColumn tableName val2) $ castEither defaultCondition condition1
+  | op == "<=" && isJust value2Type && isNothing value1Type && isCondition2 = Right $ LessthanOrEqual (TableColumn tableName val1) $ castEither defaultCondition condition2
+  | op == "<=" && isJust value1Type && isNothing value2Type && isCondition1 = Right $ LessthanOrEqual (TableColumn tableName val2) $ castEither defaultCondition condition1
+  | op == "<>" && isJust value2Type && isNothing value1Type && isCondition2 = Right $ NotEqual (TableColumn tableName val1) $ castEither defaultCondition condition2
+  | op == "<>" && isJust value1Type && isNothing value2Type && isCondition1 = Right $ NotEqual (TableColumn tableName val2) $ castEither defaultCondition condition1
+  | otherwise = Left "Error parsing where and condition. Only able to compare integer and string values with columns"
+  where
+    value1Type = parseType val1
+    value2Type = parseType val2
+    condition1 = getConditionValue' val1
+    condition2 = getConditionValue' val2
+    defaultCondition = StrValue "Kas skaitys tas gaidys (Isskyrus destytoja)"
+
+    isCondition1 = case condition1 of
+      Right _ -> True
+      Left _ -> False
+
+    isCondition2 = case condition2 of
+      Right _ -> True
+      Left _ -> False
+
+
+matchesWhereAndPattern' :: [String] -> Bool
+matchesWhereAndPattern' [condition1, operator, condition2] = isWhereAndOperation' condition1 operator condition2
+matchesWhereAndPattern' (condition1 : operator : condition2 : andString : xs) = matchesWhereAndPattern' [condition1, operator, condition2] && andString == "and" && matchesWhereAndPattern' xs
+matchesWhereAndPattern' _ = False
+
+isWhereAndOperation' :: String -> String -> String -> Bool
+isWhereAndOperation' condition1 operator condition2
+  | elem operator [">", "<", "=", "<>", "<=", ">="] && (col1Valid || col2Valid) = True
+  | otherwise = False
+  where
+    col1Valid = not (null condition1)
+    col2Valid = not (null condition2)
+
+parseType :: String -> Maybe ColumnType
+parseType str
+  | isNumber str = Just IntegerType
+  | "'" `isPrefixOf` str && "'" `isSuffixOf` str = Just StringType
+  | otherwise = Nothing
+
+isNumber :: String -> Bool
+isNumber "" = False
+isNumber xs =
+  case dropWhile isDigit xs of
+    "" -> True
+    _ -> False
+
+parseSemiCaseSensitive :: String -> [String]
+parseSemiCaseSensitive statement = convertedStatement
+  where
+    splitStatement = words statement
+    convertedStatement = map wordToLowerSensitive splitStatement
+
+wordToLowerSensitive :: String -> String
+wordToLowerSensitive word
+  | map toLower word `elem` keywords = map toLower word
+  | "avg(" `isPrefixOf` map toLower word && ")" `isSuffixOf` word = "avg(" ++ drop 4 (init word) ++ ")"
+  | "max(" `isPrefixOf` map toLower word && ")" `isSuffixOf` word = "max(" ++ drop 4 (init word) ++ ")"
+  | otherwise = word
+  where
+    keywords = ["select", "from", "where", "show", "table", "tables", "false", "true", "and", "is", "insert", "delete", "update", "set", "into"]
