@@ -353,6 +353,11 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
     convertValue (BoolValue b) = Y.Bool b
     convertValue NullValue = Y.Null
 
+
+-- =======================================
+-- Statement validation
+
+
 validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> Bool
 validateStatement stmt tables = case stmt of
   SelectAll tableNames whereClause -> Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames && validateWhereClause whereClause tables
@@ -365,16 +370,10 @@ validateStatement stmt tables = case stmt of
   ShowTableStatement tableName -> Data.List.elem tableName $ Data.List.map fst tables
   Invalid _ -> False
 
-columnsList :: DataFrame -> [Column]
-columnsList (DataFrame cols _) = cols
-
 validateWhereClause :: Maybe WhereClause -> [(TableName, DataFrame)] -> Bool
 validateWhereClause clause tables = case clause of
   Just cClause -> validateExistingClause cClause tables
   Nothing -> True
-
-getColumnByName :: String -> [Column] -> Column
-getColumnByName name cols = fromMaybe (Column "notfound" BoolType) (Data.List.find (\(Column colName _) -> colName == name) cols)
 
 validateExistingClause :: WhereClause -> [(TableName, DataFrame)] -> Bool
 validateExistingClause (IsValueBool _ tableName columnName ) tables = tablesExist [tableName] tables && colInDf && columnIsBool
@@ -403,6 +402,13 @@ selectColumnMatchesValue col@(TableColumn tableName columnName) tables val = tab
 
 selectColumnMatchesValue _ _ _ = False
 
+columnsList :: DataFrame -> [Column]
+columnsList (DataFrame cols _) = cols
+
+getColumnByName :: String -> [Column] -> Column
+getColumnByName name cols = fromMaybe (Column "notfound" BoolType) (Data.List.find (\(Column colName _) -> colName == name) cols)
+
+
 getValueFromConditionValue :: ConditionValue -> Value
 getValueFromConditionValue (StrValue str) = StringValue str
 getValueFromConditionValue (IntValue num) = IntegerValue num
@@ -414,7 +420,9 @@ columnMatchesValue (Column _ t) value = isNothing maybeValueType || (isJust mayb
 
 getTableNameFromColumn :: SelectColumn -> TableName
 getTableNameFromColumn (TableColumn tname _) = tname
-getTableNameFromColumn _ = "nan"
+getTableNameFromColumn (Avg tname _) = tname
+getTableNameFromColumn (Max tname _) = tname
+getTableNameFromColumn Now = "NO TABLE"
 
 getColumnTypeFromValueType :: Value -> Maybe ColumnType
 getColumnTypeFromValueType (IntegerValue _) = Just IntegerType
@@ -448,6 +456,11 @@ columnExistsInDataFrame (Max _ colName) (DataFrame cols _) =
   Data.List.any (\(Column name _) -> name == colName) cols
 
 columnExistsInDataFrame Now _ = True
+
+
+-- ============================
+-- End of StatementValidation
+
 
 getSelectedColumnsFunction :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
 getSelectedColumnsFunction stmt tbls = case stmt of
