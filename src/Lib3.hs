@@ -27,6 +27,8 @@ module Lib3
     compareWithCondition,
     compareValue,
     findColumnIndex,
+    extractSelectedColumnsRows,
+    extractAggregateRows,
     extractColumnNames,
     WhereClause(..),
     Condition(..),
@@ -1322,3 +1324,112 @@ extractColumnNames = mapMaybe extractName
     extractName :: SelectColumn -> Maybe ColumnName
     extractName (TableColumn _ colName) = Just colName
     extractName _ = Nothing
+
+instance Ord Value where
+compare (IntegerValue x) (IntegerValue y) = Prelude.compare x y
+compare (StringValue x) (StringValue y) = Prelude.compare x y
+compare (BoolValue x) (BoolValue y) = Prelude.compare x y
+compare _ _ = EQ 
+
+extractColumns :: DataFrame -> [Column]
+extractColumns (DataFrame cols _) = cols
+
+extractRows :: DataFrame -> [Row]
+extractRows (DataFrame _ rows) = rows
+
+extractSelectedColumnsRows :: [Lib3.TableName] -> [Lib3.SelectColumn] -> [(Lib3.TableName, DataFrame)] -> [Row]
+extractSelectedColumnsRows selectedTables selectedColumns tables = 
+    concatMap extractRowsFromTable filteredTables
+    where
+        filteredTables = filter (\(name, _) -> name `elem` selectedTables) tables
+
+        extractRowsFromTable :: (Lib3.TableName, DataFrame) -> [Row]
+        extractRowsFromTable (_, df) = map (extractSelectedCols df) (extractRows df)
+
+        extractSelectedCols :: DataFrame -> Row -> Row
+        extractSelectedCols df row = mapMaybe (extractColumn df row) selectedColumns
+
+        extractColumn :: DataFrame -> Row -> Lib3.SelectColumn -> Maybe Value
+        extractColumn df row col = case col of
+            Lib3.TableColumn _ columnName -> lookupValue columnName df row
+            _ -> Nothing
+
+        lookupValue :: String -> DataFrame -> Row -> Maybe Value
+        lookupValue columnName df row = do
+            colIndex <- findIndex (\(Column name _) -> name == columnName) (extractColumns df)
+            Just (row !! colIndex)
+
+extractAggregateRows :: [Lib3.TableName] -> [Lib3.SelectColumn] -> Maybe Lib3.WhereClause -> [(Lib3.TableName, DataFrame)] -> [Row]
+extractAggregateRows tableNames aggFuncs whereClause tables =
+    let filteredTables = filter (\(name, _) -> name `elem` tableNames) tables
+        aggregatedRows = map (applyAggregateFunction aggFuncs filteredTables whereClause) aggFuncs
+    in [concat aggregatedRows]
+
+applyAggregateFunction :: [Lib3.SelectColumn] -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Lib3.SelectColumn -> [Value]
+applyAggregateFunction aggFuncs tables whereClause aggFunc =
+    case aggFunc of
+        Lib3.Max tableName colName -> [maxAggregate tableName colName tables whereClause]
+        Lib3.Avg tableName colName -> [avgAggregate tableName colName tables whereClause]
+        _ -> error "Unsupported aggregate function"
+
+maxAggregate :: Lib3.TableName -> String -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Value
+maxAggregate tableName colName tables whereClause = 
+    let relevantRows = extractRelevantRows tableName colName tables whereClause
+        maxVal = maximum $ mapMaybe unwrapInteger relevantRows
+    in IntegerValue maxVal
+
+avgAggregate :: Lib3.TableName -> String -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Value
+avgAggregate tableName colName tables whereClause = 
+    let relevantRows = extractRelevantRows tableName colName tables whereClause
+        values = mapMaybe unwrapInteger relevantRows
+        avgVal = sum values `div` fromIntegral (length values)
+    in IntegerValue avgVal
+
+extractRelevantRows :: Lib3.TableName -> String -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> [Value]
+extractRelevantRows tableName colName tables whereClause = 
+    let maybeTable = lookup tableName tables
+        maybeColumnIndex = maybeTable >>= \df -> findColumnIndex colName (extractColumns df)
+    in case (maybeTable, maybeColumnIndex) of
+        (Just df, Just colIndex) -> filterRowsByWhereClause df colIndex whereClause
+        _ -> []
+
+filterRowsByWhereClause :: DataFrame -> Int -> Maybe Lib3.WhereClause -> [Value]
+filterRowsByWhereClause (DataFrame columns rows) colIndex whereClause =
+    case whereClause of
+        Just wc -> map (!! colIndex) $ filter (rowSatisfiesWhereClause1 wc columns) rows
+        Nothing -> map (!! colIndex) rows
+
+rowSatisfiesWhereClause1 :: Lib3.WhereClause -> [Column] -> Row -> Bool
+rowSatisfiesWhereClause1 (Lib3.Conditions conditions) columns row = 
+  all (`conditionSatisfiedInRow` (columns, row)) conditions
+rowSatisfiesWhereClause1 (Lib3.IsValueBool b _ columnName) columns row = 
+      case findColumnIndex columnName columns of
+          Just idx -> case row !! idx of
+              BoolValue val -> val == b 
+              _ -> False
+          Nothing -> False
+
+conditionSatisfiedInRow :: Lib3.Condition -> ([Column], Row) -> Bool
+conditionSatisfiedInRow (Lib3.Equals colName condValue) = evaluateCondition (==) colName condValue
+conditionSatisfiedInRow (Lib3.GreaterThan colName condValue) = evaluateCondition (>) colName condValue
+conditionSatisfiedInRow (Lib3.LessThan colName condValue) = evaluateCondition (<) colName condValue
+conditionSatisfiedInRow (Lib3.LessthanOrEqual colName condValue) = evaluateCondition (<=) colName condValue
+conditionSatisfiedInRow (Lib3.GreaterThanOrEqual colName condValue) = evaluateCondition (>=) colName condValue
+conditionSatisfiedInRow (Lib3.NotEqual colName condValue) = evaluateCondition (/=) colName condValue
+
+evaluateCondition :: (Value -> Value -> Bool) -> Lib3.SelectColumn -> Lib3.ConditionValue -> ([Column], Row) -> Bool
+evaluateCondition op (Lib3.TableColumn _ colName) condValue (columns, row) =
+    case findColumnIndex colName columns of
+        Just idx -> compareConditionValue (row !! idx) op (convertConditionValue condValue)
+        Nothing -> False
+
+compareConditionValue :: Value -> (Value -> Value -> Bool) -> Value -> Bool
+compareConditionValue val1 op val2 = val1 `op` val2
+
+convertConditionValue :: Lib3.ConditionValue -> Value
+convertConditionValue (Lib3.IntValue i) = IntegerValue i
+convertConditionValue (Lib3.StrValue s) = StringValue s
+
+unwrapInteger :: Value -> Maybe Integer
+unwrapInteger (IntegerValue i) = Just i 
+unwrapInteger _ = Nothing
