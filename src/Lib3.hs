@@ -28,7 +28,6 @@ module Lib3
     compareWithCondition,
     compareValue,
     findColumnIndex,
-    createRowFromValues,
     extractColumnNames,
     ParsedStatement(..),
     WhereClause(..),
@@ -117,7 +116,7 @@ data ParsedStatement
   | SelectAggregate SelectedTables SelectedColumns (Maybe WhereClause)
   | SelectColumns SelectedTables SelectedColumns (Maybe WhereClause)
   | DeleteStatement TableName (Maybe WhereClause)
-  | InsertStatement TableName (Maybe SelectedColumns) SelectedValues
+  | InsertStatement TableName (Maybe SelectedColumns) Row
   | UpdateStatement TableName SelectedColumns Row (Maybe WhereClause)
   | ShowTableStatement TableName
   | ShowTablesStatement
@@ -475,7 +474,7 @@ getInsertColumns statement tableName = do
   getInsertStatement tableName columns columnValues
 
 getInsertStatement :: TableName -> [SelectColumn] -> [Value] -> Either ErrorMessage ParsedStatement
-getInsertStatement tableName columns values = Right $ InsertStatement tableName (Just columns) (Prelude.map valueToString values)
+getInsertStatement tableName columns values = Right $ InsertStatement tableName (Just columns)  values
 
 valueToString :: Value -> String
 valueToString (IntegerValue i) = show i
@@ -1095,6 +1094,15 @@ wordToLowerSensitive word
   where
     keywords = ["select", "from", "where", "show", "table", "tables", "false", "true", "and", "is", "insert", "delete", "update", "set", "into"]
 
+
+-- ===============================================================
+-- End of Parser
+
+
+-- ===============================================================
+  --Start of folterRows
+
+
 filterRows :: DataFrame -> Maybe WhereClause -> Either String DataFrame
 filterRows df@(DataFrame cols _) (Just wc) =
     if whereClauseHasValidColumns wc cols
@@ -1172,36 +1180,38 @@ compareValue _ _ _ = False
 findColumnIndex :: String -> [Column] -> Maybe Int
 findColumnIndex columnName cols = Data.List.findIndex (\(Column name _) -> name == columnName) cols
 
-createRowFromValues :: Maybe [ColumnName] -> [Column] -> [InsertValue] -> Either String Row
-createRowFromValues maybeSelectedColumns cols values =
-    case maybeSelectedColumns of
-        Just selectedColumns -> 
-            if Data.List.length selectedColumns == Data.List.length values then
-                sequence $ Data.List.zipWith (matchValueToColumn cols) selectedColumns values
-            else
-                Left "Error: Number of specified columns and values does not match."
-        Nothing -> 
-            if Data.List.length cols == Data.List.length values then
-                sequence $ Data.List.zipWith matchValueToColumnType cols values
-            else
-                Left "Error: Number of table columns and values does not match."
+-- Validation even if the isStatementValid does validation so probably not needed
 
-matchValueToColumn :: [Column] -> ColumnName -> InsertValue -> Either String Value
-matchValueToColumn cols colName value =
-    case Data.List.find (\(Column name _) -> name == colName) cols of
-        Just col -> matchValueToColumnType col value
-        Nothing  -> Left $ "Error: Column " ++ colName ++ " does not exist."
+-- createRowFromValues :: Maybe [ColumnName] -> [Column] -> [InsertValue] -> Either String Row
+-- createRowFromValues maybeSelectedColumns cols values =
+--     case maybeSelectedColumns of
+--         Just selectedColumns -> 
+--             if Data.List.length selectedColumns == Data.List.length values then
+--                 sequence $ Data.List.zipWith (matchValueToColumn cols) selectedColumns values
+--             else
+--                 Left "Error: Number of specified columns and values does not match."
+--         Nothing -> 
+--             if Data.List.length cols == Data.List.length values then
+--                 sequence $ Data.List.zipWith matchValueToColumnType cols values
+--             else
+--                 Left "Error: Number of table columns and values does not match."
 
-matchValueToColumnType :: Column -> InsertValue -> Either String Value
-matchValueToColumnType (Column _ IntegerType) value =
-    maybe (Left "Error: Invalid integer value.") (Right . IntegerValue) (readMaybe value :: Maybe Integer)
-matchValueToColumnType (Column _ StringType) value =
-    Right $ StringValue value
-matchValueToColumnType (Column _ BoolType) value =
-    case Data.List.map Data.Char.toLower value of
-        "true"  -> Right $ BoolValue True
-        "false" -> Right $ BoolValue False
-        _       -> Left "Error: Invalid boolean value."
+-- matchValueToColumn :: [Column] -> ColumnName -> InsertValue -> Either String Value
+-- matchValueToColumn cols colName value =
+--     case Data.List.find (\(Column name _) -> name == colName) cols of
+--         Just col -> matchValueToColumnType col value
+--         Nothing  -> Left $ "Error: Column " ++ colName ++ " does not exist."
+
+-- matchValueToColumnType :: Column -> InsertValue -> Either String Value
+-- matchValueToColumnType (Column _ IntegerType) value =
+--     maybe (Left "Error: Invalid integer value.") (Right . IntegerValue) (readMaybe value :: Maybe Integer)
+-- matchValueToColumnType (Column _ StringType) value =
+--     Right $ StringValue value
+-- matchValueToColumnType (Column _ BoolType) value =
+--     case Data.List.map Data.Char.toLower value of
+--         "true"  -> Right $ BoolValue True
+--         "false" -> Right $ BoolValue False
+--         _       -> Left "Error: Invalid boolean value."
 
 extractColumnNames :: SelectedColumns -> [ColumnName]
 extractColumnNames = mapMaybe extractName
