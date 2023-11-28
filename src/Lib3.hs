@@ -31,6 +31,7 @@ module Lib3
     WhereClause(..),
     Condition(..),
     ConditionValue(..),
+    getStatementType1,
   )
 where
 
@@ -65,7 +66,8 @@ import Data.List
       notElem,
       filter,
       findIndex,
-      (!!) )
+      (!!),
+      isInfixOf )
 import qualified Data.Yaml as Y
 import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
@@ -306,6 +308,17 @@ convertColumnType dt = case dt of
 
 convertRows :: [[Y.Value]] -> [Row]
 convertRows = Data.List.map (Data.List.map convertValue)
+
+getStatementType1 :: String -> StatementType
+getStatementType1 query 
+    | "select" `isPrefixOf` lowerQuery = if "show" `isPrefixOf` lowerQuery then ShowTable else Select
+    | "insert" `isPrefixOf` lowerQuery = Insert
+    | "update" `isPrefixOf` lowerQuery = Update
+    | "delete" `isPrefixOf` lowerQuery = Delete
+    | "show tables" `Data.List.isInfixOf` lowerQuery = ShowTables
+    | otherwise = InvalidStatement
+  where
+    lowerQuery = map toLower query
 
 convertValue :: Y.Value -> DataFrame.Value
 convertValue val = case val of

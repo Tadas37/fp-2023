@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Data.List (find)
+import Data.List (find, isPrefixOf)
 import Data.Maybe (mapMaybe)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Free (Free (..), liftF)
@@ -10,6 +10,11 @@ import Data.List qualified as L
 import Lib1 qualified
 import Lib2 qualified
 import DataFrame
+    ( Column(..),
+      ColumnType(StringType),
+      DataFrame(..),
+      Row,
+      Value(StringValue) )
 import Lib3 qualified
 import Data.Either (partitionEithers)
 import Data.List (intercalate)
@@ -97,6 +102,10 @@ runExecuteIO (Free step) = do
         getTableNames (Lib3.DeleteStatement tableName _) = [tableName]
         getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
         getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
+        getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
+        getTableNames Lib3.ShowTablesStatement = []
+        getTableNames (Lib3.Invalid _) = []
+        getTableNames _ = [] 
     
     runStep (Lib3.UpdateTable (tableName, df) next) = do
         let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
@@ -153,31 +162,55 @@ runExecuteIO (Free step) = do
         Right parsedStatement -> return $ next parsedStatement
         Left error -> return $ next $ Lib3.Invalid error
 
-    runStep (Lib3.DeleteRows (Lib3.DeleteStatement tableName whereClause) tables next) = do
-      case lookup tableName tables of
-          Just df -> do
-              let updatedDf = Lib3.filterRows df whereClause
-              case updatedDf of
-                  Right dfFiltered -> 
-                      runStep (Lib3.UpdateTable (tableName, dfFiltered) (next (tableName, dfFiltered)))
-                  Left errMsg -> 
-                      error errMsg
-          Nothing -> error $ "Table not found: " ++ tableName
-    runStep (Lib3.InsertRows (Lib3.InsertStatement tableName maybeSelectedColumns row) tables next) = do
-        case lookup tableName tables of
-            Just (DataFrame cols tableRows) -> do
-                let columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
-                let newRow = Right row
-                case newRow of
-                    Right row -> do
-                        let updatedDf = DataFrame cols (tableRows ++ [row])
-                        runStep (Lib3.UpdateTable (tableName, updatedDf) (next (tableName, updatedDf)))
-                    Left errMsg -> 
-                        error errMsg
-            Nothing -> error $ "Table not found: " ++ tableName
+    runStep (Lib3.DeleteRows parsedStatement tables next) = 
+      case parsedStatement of
+          Lib3.DeleteStatement tableName whereClause ->
+              case lookup tableName tables of
+                  Just df -> do
+                      let updatedDf = Lib3.filterRows df whereClause
+                      case updatedDf of
+                          Right dfFiltered -> 
+                              runStep (Lib3.UpdateTable (tableName, dfFiltered) (next (tableName, dfFiltered)))
+                          Left errMsg -> error errMsg
+                  Nothing -> error $ "Table not found: " ++ tableName
+          Lib3.SelectAll _ _ -> error "SelectAll not valid for DeleteRows"
+          Lib3.SelectAggregate _ _ _ -> error "SelectAggregate not valid for DeleteRows"
+          Lib3.SelectColumns _ _ _ -> error "SelectColumns not valid for DeleteRows"
+          Lib3.InsertStatement _ _ _ -> error "InsertStatement not valid for DeleteRows"
+          Lib3.UpdateStatement _ _ _ _ -> error "UpdateStatement not valid for DeleteRows"
+          Lib3.ShowTableStatement _ -> error "ShowTableStatement not valid for DeleteRows"
+          Lib3.ShowTablesStatement -> error "ShowTablesStatement not valid for DeleteRows"
+          Lib3.Invalid _ -> error "Invalid statement cannot be processed in DeleteRows"
+  
+    runStep (Lib3.InsertRows parsedStatement tables next) =
+        case parsedStatement of
+            Lib3.InsertStatement tableName maybeSelectedColumns row ->
+                case lookup tableName tables of
+                    Just (DataFrame cols tableRows) -> do
+                        let columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
+                        let newRow = Right row 
+                        case newRow of
+                            Right row -> do
+                                let updatedDf = DataFrame cols (tableRows ++ [row])
+                                runStep (Lib3.UpdateTable (tableName, updatedDf) (next (tableName, updatedDf)))
+                            Left errMsg -> error errMsg
+                    Nothing -> error $ "Table not found: " ++ tableName
+            Lib3.SelectAll _ _ -> error "SelectAll not valid for InsertRows"
+            Lib3.SelectAggregate _ _ _ -> error "SelectAggregate not valid for InsertRows"
+            Lib3.SelectColumns _ _ _ -> error "SelectColumns not valid for InsertRows"
+            Lib3.DeleteStatement _ _ -> error "DeleteStatement not valid for InsertRows"
+            Lib3.UpdateStatement _ _ _ _ -> error "UpdateStatement not valid for InsertRows"
+            Lib3.ShowTableStatement _ -> error "ShowTableStatement not valid for InsertRows"
+            Lib3.ShowTablesStatement -> error "ShowTablesStatement not valid for InsertRows"
+            Lib3.Invalid _ -> error "Invalid statement cannot be processed in InsertRows"
+    runStep (Lib3.GetStatementType sqlQuery next) = do
+      let stmtType = Lib3.getStatementType1 sqlQuery
+      return $ next stmtType
 
 columnName :: DataFrame.Column -> String
 columnName (DataFrame.Column name _) = name 
 
 getTableFilePath :: String -> String
 getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
+
+
