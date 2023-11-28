@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 module Main (main) where
 
 import Data.List (find)
@@ -168,8 +167,7 @@ runExecuteIO (Free step) = do
         case lookup tableName tables of
             Just (DataFrame cols tableRows) -> do
                 let columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
-                let insertValues = row 
-                let newRow = Lib3.createRowFromValues columnNames cols insertValues
+                let newRow = Right row
                 case newRow of
                     Right row -> do
                         let updatedDf = DataFrame cols (tableRows ++ [row])
@@ -183,4 +181,3 @@ columnName (DataFrame.Column name _) = name
 
 getTableFilePath :: String -> String
 getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
-    
