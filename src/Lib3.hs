@@ -315,6 +315,7 @@ getStatementType1 query
     | "insert" `isPrefixOf` lowerQuery = Insert
     | "update" `isPrefixOf` lowerQuery = Update
     | "delete" `isPrefixOf` lowerQuery = Delete
+    | "show table" `isPrefixOf` lowerQuery = ShowTable
     | "show tables" `Data.List.isInfixOf` lowerQuery = ShowTables
     | otherwise = InvalidStatement
   where
