@@ -181,4 +181,3 @@ columnName (DataFrame.Column name _) = name
 
 getTableFilePath :: String -> String
 getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
-    

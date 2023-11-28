@@ -38,7 +38,7 @@ import Control.Monad.Free (Free (..), liftF)
 
 import DataFrame (Column(..), ColumnType(..), Value(..), Row, DataFrame(..))
 import Data.Yaml (decodeEither')
-import Data.Text as T
+import Data.Text as T ( unpack, pack )
 import Data.List
     ( (++),
       zip,
@@ -63,8 +63,9 @@ import Data.List
       lookup,
       any,
       notElem,
+      filter,
+      findIndex,
       (!!) )
-import Data.Maybe ( mapMaybe, isJust, isNothing, fromMaybe )
 import qualified Data.Yaml as Y
 import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
@@ -72,15 +73,13 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.ByteString.Char8 as BS
 import Data.Either (isRight, isLeft)
 import Prelude hiding (zip)
-import Data.Maybe
-import Text.Read (readMaybe)
+import Data.Maybe ( mapMaybe, isJust, isNothing, fromMaybe )
 
 type TableName = String
 type FileContent = String
 type ErrorMessage = String
 type SQLQuery = String
 type ColumnName = String
-type InsertValue = String
 
 data SerializedTable = SerializedTable
   { tableName :: TableName
@@ -113,7 +112,6 @@ data SelectColumn
 
 type SelectedColumns = [SelectColumn]
 type SelectedTables = [TableName]
-type SelectedValues = [InsertValue]
 
 data ParsedStatement
   = SelectAll SelectedTables (Maybe WhereClause)
@@ -281,11 +279,11 @@ updateRowIfMatches newRow (Just whereClause) row =
 updateRowIfMatches newRow Nothing _ = newRow
 
 rowMatchesWhereClause :: Row -> WhereClause -> Bool
-rowMatchesWhereClause row (IsValueBool b tableName columnName) = False
+rowMatchesWhereClause _ (IsValueBool {}) = False
 rowMatchesWhereClause row (Conditions conditions) = Data.List.all (rowMatchesCondition row) conditions
 
 rowMatchesCondition :: Row -> Condition -> Bool
-rowMatchesCondition row (Equals (TableColumn _ columnName) (IntValue value)) = False
+rowMatchesCondition _ (Equals (TableColumn _ _) (IntValue _)) = False
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content =
@@ -344,30 +342,30 @@ dataFrameToSerializedTable :: (TableName, DataFrame) -> SerializedTable
 dataFrameToSerializedTable (tblName, DataFrame columns rows) =
     SerializedTable {
         tableName = tblName,
-        columns = Data.List.map convertColumn columns,
+        columns = Data.List.map convertColumnToSerializedColumn columns,
         rows = Data.List.map convertRow rows
     }
   where
-    convertColumn :: Column -> SerializedColumn
-    convertColumn (Column name columnType) =
+    convertColumnToSerializedColumn :: Column -> SerializedColumn
+    convertColumnToSerializedColumn (Column name columnType) =
         SerializedColumn {
             name = name,
-            dataType = convertColumnType columnType
+            dataType = convertColumnTypeToString columnType
         }
 
-    convertColumnType :: ColumnType -> String
-    convertColumnType IntegerType = "integer"
-    convertColumnType StringType = "string"
-    convertColumnType BoolType = "boolean"
+    convertColumnTypeToString :: ColumnType -> String
+    convertColumnTypeToString IntegerType = "integer"
+    convertColumnTypeToString StringType = "string"
+    convertColumnTypeToString BoolType = "boolean"
 
     convertRow :: Row -> [Y.Value]
-    convertRow = Data.List.map convertValue
+    convertRow = Data.List.map convertValueToYValue
 
-    convertValue :: Value -> Y.Value
-    convertValue (IntegerValue n) = Y.Number (fromIntegral n)
-    convertValue (StringValue s) = Y.String (T.pack s)
-    convertValue (BoolValue b) = Y.Bool b
-    convertValue NullValue = Y.Null
+    convertValueToYValue :: Value -> Y.Value
+    convertValueToYValue (IntegerValue n) = Y.Number (fromIntegral n)
+    convertValueToYValue (StringValue s) = Y.String (T.pack s)
+    convertValueToYValue (BoolValue b) = Y.Bool b
+    convertValueToYValue NullValue = Y.Null
 
 
 -- =======================================
@@ -377,10 +375,10 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
 validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> Bool
 validateStatement stmt tables = case stmt of
   SelectAll tableNames whereClause -> Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames && validateWhereClause whereClause tables
-  SelectColumns tableNames cols whereClause -> validateTableAndColumns tableNames cols tables && validateWhereClause whereClause tables
-  SelectAggregate tableNames cols whereClause -> validateTableAndColumns tableNames cols tables && validateWhereClause whereClause tables
-  InsertStatement tableName cols vals -> validateTableAndColumns [tableName] cols tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
-  UpdateStatement tableName cols vals whereClause -> validateTableAndColumns [tableName] cols tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
+  SelectColumns tableNames cols whereClause -> validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
+  SelectAggregate tableNames cols whereClause -> validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
+  InsertStatement tableName cols vals -> validateTableAndColumns [tableName] cols tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip (fromMaybe [] cols) vals)
+  UpdateStatement tableName cols vals whereClause -> validateTableAndColumns [tableName] (Just cols) tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
   DeleteStatement tableName whereClause -> tableName `Data.List.elem` Data.List.map fst tables && validateWhereClause whereClause tables
   ShowTablesStatement -> False
   ShowTableStatement tableName -> Data.List.elem tableName $ Data.List.map fst tables
@@ -411,7 +409,7 @@ validateExistingClause (Conditions conditions) tables = Data.List.all validCondi
 selectColumnMatchesValue :: SelectColumn -> [(TableName, DataFrame)] -> Value -> Bool
 selectColumnMatchesValue col@(TableColumn tableName columnName) tables val = tableExists && isMatchingValue
   where
-    tableExists = validateTableAndColumns [tableName] [col] tables
+    tableExists = validateTableAndColumns [tableName] (Just [col]) tables
     columns = getTableColumns tables tableName
     column = getColumnByName columnName columns
     isMatchingValue = columnMatchesValue column val
@@ -453,10 +451,11 @@ tablesExist :: [TableName] -> [(TableName, DataFrame)] -> Bool
 tablesExist tables databaseTables = Data.List.all (`Data.List.elem` tablesInDatabase) tables
   where tablesInDatabase = Data.List.map fst databaseTables
 
-validateTableAndColumns :: [TableName] -> [SelectColumn] -> [(TableName, DataFrame)] -> Bool
-validateTableAndColumns tableNames cols tables = Data.List.all tableAndColumnsExist tableNames
+validateTableAndColumns :: [TableName] -> Maybe [SelectColumn] -> [(TableName, DataFrame)] -> Bool
+validateTableAndColumns tableNames cols tables = isJust cols && Data.List.all tableAndColumnsExist tableNames
   where
-    tableAndColumnsExist tableName = maybe False (columnsExistInTable cols) (Data.List.lookup tableName tables)
+    justCols = fromMaybe [] cols
+    tableAndColumnsExist tableName = maybe False (columnsExistInTable justCols) (Data.List.lookup tableName tables)
 
 columnsExistInTable :: [SelectColumn] -> DataFrame -> Bool
 columnsExistInTable columns df = Data.List.all (`columnExistsInDataFrame` df) columns
@@ -566,11 +565,11 @@ getInsertColumns statement tableName = do
 getInsertStatement :: TableName -> [SelectColumn] -> [Value] -> Either ErrorMessage ParsedStatement
 getInsertStatement tableName columns values = Right $ InsertStatement tableName (Just columns)  values
 
-valueToString :: Value -> String
-valueToString (IntegerValue i) = show i
-valueToString (StringValue s) = s
-valueToString (BoolValue b) = show b
-valueToString NullValue = "null"
+-- valueToString :: Value -> String
+-- valueToString (IntegerValue i) = show i
+-- valueToString (StringValue s) = s
+-- valueToString (BoolValue b) = show b
+-- valueToString NullValue = "null"
 
 getInsertColumnValues :: [String] -> Either ErrorMessage [Value]
 getInsertColumnValues [value] = do
@@ -1198,7 +1197,7 @@ filterRows df@(DataFrame cols _) (Just wc) =
     if whereClauseHasValidColumns wc cols
     then filterDataFrame df wc
     else Left "Error: Specified column in WhereClause does not exist."
-filterRows (DataFrame cols rows) Nothing = Right $ DataFrame cols []
+filterRows (DataFrame cols _) Nothing = Right $ DataFrame cols []
 
 whereClauseHasValidColumns :: WhereClause -> [Column] -> Bool
 whereClauseHasValidColumns (IsValueBool _ _ columnName) cols = isJust (findColumnIndex columnName cols)
@@ -1268,7 +1267,7 @@ compareValue (StringValue s) op (StrValue v) = s `op` v
 compareValue _ _ _ = False
 
 findColumnIndex :: String -> [Column] -> Maybe Int
-findColumnIndex columnName cols = Data.List.findIndex (\(Column name _) -> name == columnName) cols
+findColumnIndex columnName = Data.List.findIndex (\(Column name _) -> name == columnName)
 
 -- Validation even if the isStatementValid does validation so probably not needed
 
