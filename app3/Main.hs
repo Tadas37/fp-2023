@@ -1,5 +1,6 @@
 module Main (main) where
 
+import System.Directory (doesFileExist)
 import Data.List (find, isPrefixOf)
 import Data.Maybe (mapMaybe,fromMaybe)
 import Data.List (findIndex)
@@ -76,8 +77,13 @@ runExecuteIO (Free step) = do
     runStep :: Lib3.ExecutionAlgebra a -> IO a
     runStep (Lib3.GetTime next) = getCurrentTime >>= return . next
     runStep (Lib3.LoadFiles tableNames next) = do
-        fileContents <- mapM (readFile . getTableFilePath) tableNames
-        return $ next fileContents
+      tablesExist <- filesExist (map getTableFilePath tableNames)
+      if tablesExist
+        then do
+          fileContents <- mapM (readFile . getTableFilePath) tableNames
+          return $ next $ Right fileContents
+        else
+          return $ next $ Left "One or more provided tables does not exist"
     runStep (Lib3.ParseTables contents next) = do
         let parsedTables = map Lib3.parseYAMLContent contents
         let (errors, tables) = partitionEithers parsedTables
@@ -217,3 +223,11 @@ columnName (DataFrame.Column name _) = name
 
 getTableFilePath :: String -> String
 getTableFilePath tableName = "db/" ++ tableName ++ ".yaml"
+
+filesExist :: [String] -> IO Bool
+filesExist [tableName] = doesFileExist tableName
+filesExist (tableName : xs) = do
+  tableExists <- doesFileExist tableName
+  rest <- filesExist xs
+  return $ tableExists && rest
+filesExist _ = return True

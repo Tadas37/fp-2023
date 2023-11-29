@@ -90,6 +90,7 @@ executables:
     - text
     - aeson
     - bytestring
+    - directory
 
 tests:
   fp2023-test:
