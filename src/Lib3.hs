@@ -1203,7 +1203,7 @@ wordToLowerSensitive word
   | "max(" `Data.List.isPrefixOf` Data.List.map Data.Char.toLower word && ")" `Data.List.isSuffixOf` word = "max(" Data.List.++ Data.List.drop 4 (Data.List.init word) Data.List.++ ")"
   | otherwise = word
   where
-    keywords = ["select", "from", "where", "show", "table", "tables", "false", "true", "and", "is", "insert", "delete", "update", "set", "into"]
+    keywords = ["select", "from", "where", "show", "table", "tables", "false", "true", "and", "is", "insert", "delete", "update", "set", "into", "values"]
 
 
 -- ===============================================================
