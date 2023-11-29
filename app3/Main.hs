@@ -111,7 +111,7 @@ runExecuteIO (Free step) = do
         getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
         getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
         getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
-        getTableNames Lib3.ShowTablesStatement = []
+        getTableNames Lib3.ShowTablesStatement = ["employees", "employees1"]
         getTableNames (Lib3.Invalid _) = []
         getTableNames _ = [] 
     
@@ -199,7 +199,7 @@ runExecuteIO (Free step) = do
                 case lookup tableName tables of
                     Just (DataFrame cols tableRows) -> do
                         let columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
-                        let newRow = Right row 
+                        let newRow = Lib3.createRowFromValues columnNames cols row
                         case newRow of
                             Right row -> do
                                 let updatedDf = DataFrame cols (tableRows ++ [row])

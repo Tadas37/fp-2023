@@ -34,6 +34,7 @@ module Lib3
     Condition(..),
     ConditionValue(..),
     getStatementType1,
+    createRowFromValues,
   )
 where
 
@@ -78,6 +79,8 @@ import qualified Data.ByteString.Char8 as BS
 import Data.Either (isRight, isLeft)
 import Prelude hiding (zip)
 import Data.Maybe ( mapMaybe, isJust, isNothing, fromMaybe )
+import Data.Aeson.Encoding (value)
+import Control.Monad (zipWithM)
 
 type TableName = String
 type FileContent = String
@@ -315,13 +318,13 @@ convertRows :: [[Y.Value]] -> [Row]
 convertRows = Data.List.map (Data.List.map convertValue)
 
 getStatementType1 :: String -> StatementType
-getStatementType1 query 
+getStatementType1 query
     | "select" `isPrefixOf` lowerQuery = if "show" `isPrefixOf` lowerQuery then ShowTable else Select
     | "insert" `isPrefixOf` lowerQuery = Insert
     | "update" `isPrefixOf` lowerQuery = Update
     | "delete" `isPrefixOf` lowerQuery = Delete
-    | "show table" `isPrefixOf` lowerQuery = ShowTable
     | "show tables" `Data.List.isInfixOf` lowerQuery = ShowTables
+    | "show table" `isPrefixOf` lowerQuery = ShowTable
     | otherwise = InvalidStatement
   where
     lowerQuery = map toLower query
@@ -1238,7 +1241,7 @@ columnNameFromCondition (NotEqual colName _) = extractColumnName colName
 
 extractColumnName :: SelectColumn -> String
 extractColumnName (TableColumn _ colName) = colName
--- Add cases for other SelectColumn variants if necessary
+
 extractColumnName _ = error "Unsupported SelectColumn type for condition"
 
 
@@ -1293,36 +1296,23 @@ findColumnIndex columnName = Data.List.findIndex (\(Column name _) -> name == co
 
 -- Validation even if the isStatementValid does validation so probably not needed
 
--- createRowFromValues :: Maybe [ColumnName] -> [Column] -> [InsertValue] -> Either String Row
--- createRowFromValues maybeSelectedColumns cols values =
---     case maybeSelectedColumns of
---         Just selectedColumns -> 
---             if Data.List.length selectedColumns == Data.List.length values then
---                 sequence $ Data.List.zipWith (matchValueToColumn cols) selectedColumns values
---             else
---                 Left "Error: Number of specified columns and values does not match."
---         Nothing -> 
---             if Data.List.length cols == Data.List.length values then
---                 sequence $ Data.List.zipWith matchValueToColumnType cols values
---             else
---                 Left "Error: Number of table columns and values does not match."
+createRowFromValues :: Maybe [ColumnName] -> [Column] -> [Value] -> Either String Row
+createRowFromValues maybeSelectedColumns cols values =
+    case maybeSelectedColumns of
+        Just selectedColumns -> Control.Monad.zipWithM (matchValueToColumn cols) selectedColumns values
+        Nothing -> zipWithM matchValueToColumnType cols values
 
--- matchValueToColumn :: [Column] -> ColumnName -> InsertValue -> Either String Value
--- matchValueToColumn cols colName value =
---     case Data.List.find (\(Column name _) -> name == colName) cols of
---         Just col -> matchValueToColumnType col value
---         Nothing  -> Left $ "Error: Column " ++ colName ++ " does not exist."
+matchValueToColumn :: [Column] -> ColumnName -> Value -> Either ErrorMessage Value
+matchValueToColumn cols colName value =
+    case Data.List.find (\(Column name _) -> name == colName) cols of
+        Just col -> matchValueToColumnType col value
+        Nothing  -> Left $ "Error: Column " ++ colName ++ " does not exist."
 
--- matchValueToColumnType :: Column -> InsertValue -> Either String Value
--- matchValueToColumnType (Column _ IntegerType) value =
---     maybe (Left "Error: Invalid integer value.") (Right . IntegerValue) (readMaybe value :: Maybe Integer)
--- matchValueToColumnType (Column _ StringType) value =
---     Right $ StringValue value
--- matchValueToColumnType (Column _ BoolType) value =
---     case Data.List.map Data.Char.toLower value of
---         "true"  -> Right $ BoolValue True
---         "false" -> Right $ BoolValue False
---         _       -> Left "Error: Invalid boolean value."
+matchValueToColumnType :: Column -> Value -> Either ErrorMessage Value
+matchValueToColumnType (Column _ IntegerType) v@(IntegerValue _) = Right v
+matchValueToColumnType (Column _ StringType) v@(StringValue _) = Right v
+matchValueToColumnType (Column _ BoolType) v@(BoolValue _) = Right v
+matchValueToColumnType _ _ = Left "Mismatched insert column types"
 
 extractColumnNames :: SelectedColumns -> [ColumnName]
 extractColumnNames = mapMaybe extractName
@@ -1335,7 +1325,7 @@ instance Ord Value where
 compare (IntegerValue x) (IntegerValue y) = Prelude.compare x y
 compare (StringValue x) (StringValue y) = Prelude.compare x y
 compare (BoolValue x) (BoolValue y) = Prelude.compare x y
-compare _ _ = EQ 
+compare _ _ = EQ
 
 extractColumns :: DataFrame -> [Column]
 extractColumns (DataFrame cols _) = cols
@@ -1344,7 +1334,7 @@ extractRows :: DataFrame -> [Row]
 extractRows (DataFrame _ rows) = rows
 
 extractSelectedColumnsRows :: [Lib3.TableName] -> [Lib3.SelectColumn] -> [(Lib3.TableName, DataFrame)] -> [Row]
-extractSelectedColumnsRows selectedTables selectedColumns tables = 
+extractSelectedColumnsRows selectedTables selectedColumns tables =
     concatMap extractRowsFromTable filteredTables
     where
         filteredTables = filter (\(name, _) -> name `elem` selectedTables) tables
@@ -1379,20 +1369,20 @@ applyAggregateFunction aggFuncs tables whereClause aggFunc =
         _ -> error "Unsupported aggregate function"
 
 maxAggregate :: Lib3.TableName -> String -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Value
-maxAggregate tableName colName tables whereClause = 
+maxAggregate tableName colName tables whereClause =
     let relevantRows = extractRelevantRows tableName colName tables whereClause
         maxVal = maximum $ mapMaybe unwrapInteger relevantRows
     in IntegerValue maxVal
 
 avgAggregate :: Lib3.TableName -> String -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Value
-avgAggregate tableName colName tables whereClause = 
+avgAggregate tableName colName tables whereClause =
     let relevantRows = extractRelevantRows tableName colName tables whereClause
         values = mapMaybe unwrapInteger relevantRows
         avgVal = sum values `div` fromIntegral (length values)
     in IntegerValue avgVal
 
 extractRelevantRows :: Lib3.TableName -> String -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> [Value]
-extractRelevantRows tableName colName tables whereClause = 
+extractRelevantRows tableName colName tables whereClause =
     let maybeTable = lookup tableName tables
         maybeColumnIndex = maybeTable >>= \df -> findColumnIndex colName (extractColumns df)
     in case (maybeTable, maybeColumnIndex) of
@@ -1406,12 +1396,12 @@ filterRowsByWhereClause (DataFrame columns rows) colIndex whereClause =
         Nothing -> map (!! colIndex) rows
 
 rowSatisfiesWhereClause1 :: Lib3.WhereClause -> [Column] -> Row -> Bool
-rowSatisfiesWhereClause1 (Lib3.Conditions conditions) columns row = 
+rowSatisfiesWhereClause1 (Lib3.Conditions conditions) columns row =
   all (`conditionSatisfiedInRow` (columns, row)) conditions
-rowSatisfiesWhereClause1 (Lib3.IsValueBool b _ columnName) columns row = 
+rowSatisfiesWhereClause1 (Lib3.IsValueBool b _ columnName) columns row =
       case findColumnIndex columnName columns of
           Just idx -> case row !! idx of
-              BoolValue val -> val == b 
+              BoolValue val -> val == b
               _ -> False
           Nothing -> False
 
@@ -1428,6 +1418,7 @@ evaluateCondition op (Lib3.TableColumn _ colName) condValue (columns, row) =
     case findColumnIndex colName columns of
         Just idx -> compareConditionValue (row !! idx) op (convertConditionValue condValue)
         Nothing -> False
+evaluateCondition _ _ _ _ = False
 
 compareConditionValue :: Value -> (Value -> Value -> Bool) -> Value -> Bool
 compareConditionValue val1 op val2 = val1 `op` val2
@@ -1437,5 +1428,5 @@ convertConditionValue (Lib3.IntValue i) = IntegerValue i
 convertConditionValue (Lib3.StrValue s) = StringValue s
 
 unwrapInteger :: Value -> Maybe Integer
-unwrapInteger (IntegerValue i) = Just i 
+unwrapInteger (IntegerValue i) = Just i
 unwrapInteger _ = Nothing
