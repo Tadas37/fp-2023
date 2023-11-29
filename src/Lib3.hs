@@ -151,14 +151,14 @@ data SelectType = Aggregate | ColumnsAndTime | AllColumns
 data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables | InvalidStatement
 
 data ExecutionAlgebra next
-  = LoadFiles [TableName] ([FileContent] -> next)
+  = LoadFiles [TableName] (Either ErrorMessage [FileContent] -> next)
   | ParseTables [FileContent] ([(TableName, DataFrame)] -> next)
   | GetTableDfByName TableName [(TableName, DataFrame)] (DataFrame -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
   | GetStatementType SQLQuery (StatementType -> next)
   | ParseSql SQLQuery (ParsedStatement -> next)
-  | IsParsedStatementValid ParsedStatement [(TableName, DataFrame)] (Bool -> next)
+  | IsParsedStatementValid ParsedStatement [(TableName, DataFrame)] ((Bool, ErrorMessage) -> next)
   | GetTableNames ParsedStatement ([TableName] -> next)
   | DeleteRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | InsertRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
@@ -173,7 +173,7 @@ data ExecutionAlgebra next
 
 type Execution = Free ExecutionAlgebra
 
-loadFiles :: [TableName] -> Execution [FileContent]
+loadFiles :: [TableName] -> Execution (Either ErrorMessage [FileContent])
 loadFiles names = liftF $ LoadFiles names id
 
 parseTables :: [FileContent] -> Execution [(TableName, DataFrame)]
@@ -194,8 +194,8 @@ getStatementType query = liftF $ GetStatementType query id
 parseSql :: SQLQuery -> Execution ParsedStatement
 parseSql query = liftF $ ParseSql query id
 
-isParsedStatementValid :: ParsedStatement -> [(TableName, DataFrame)] -> Execution Bool
-isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables (\_ -> validateStatement statement tables)
+isParsedStatementValid :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Bool, ErrorMessage)
+isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables id
 
 getTableNames :: ParsedStatement -> Execution [TableName]
 getTableNames statement = liftF $ GetTableNames statement id
@@ -232,41 +232,44 @@ executeSql statement = do
   parsedStatement <- parseSql statement
   tableNames <- getTableNames parsedStatement
   tableFiles <- loadFiles tableNames
-  tables <- parseTables tableFiles
-  statementType <- getStatementType statement
-  timeStamp     <- getTime
-  isValid <- isParsedStatementValid parsedStatement tables
-  if not isValid
-    then return $ Left "err"
-    else
-    case statementType of
-      Select -> do
-        columns     <- getSelectedColumns parsedStatement tables
-        rows        <- getReturnTableRows parsedStatement tables timeStamp
-        df          <- generateDataFrame columns rows
-        return $ Right df
-      Delete -> do
-        (name, df)  <- deleteRows parsedStatement tables
-        updateTable (name, df)
-        return $ Right df
-      Insert -> do
-        (name, df)  <- insertRows parsedStatement tables
-        updateTable (name, df)
-        return $ Right df
-      Update -> do
-        (name, df)  <- updateRows parsedStatement tables
-        updateTable (name, df)
-        return $ Right df
-      ShowTables -> do
-        allTables   <- showTablesFunction tableNames
-        return $ Right allTables
-      ShowTable -> do
-        nonSelectTableName <- getNonSelectTableName parsedStatement
-        df          <- getTableDfByName nonSelectTableName tables
-        allTables   <- showTableFunction df
-        return $ Right allTables
-      InvalidStatement -> do
-        return $ Left "Invalid statement"
+  case tableFiles of
+    Left err -> return $ Left err
+    Right content -> do
+      tables <- parseTables content
+      statementType <- getStatementType statement
+      timeStamp     <- getTime
+      (isValid, errorMessage) <- isParsedStatementValid parsedStatement tables
+      if not isValid
+        then return $ Left errorMessage
+        else
+        case statementType of
+          Select -> do
+            columns     <- getSelectedColumns parsedStatement tables
+            rows        <- getReturnTableRows parsedStatement tables timeStamp
+            df          <- generateDataFrame columns rows
+            return $ Right df
+          Delete -> do
+            (name, df)  <- deleteRows parsedStatement tables
+            updateTable (name, df)
+            return $ Right df
+          Insert -> do
+            (name, df)  <- insertRows parsedStatement tables
+            updateTable (name, df)
+            return $ Right df
+          Update -> do
+            (name, df)  <- updateRows parsedStatement tables
+            updateTable (name, df)
+            return $ Right df
+          ShowTables -> do
+            allTables   <- showTablesFunction tableNames
+            return $ Right allTables
+          ShowTable -> do
+            nonSelectTableName <- getNonSelectTableName parsedStatement
+            df          <- getTableDfByName nonSelectTableName tables
+            allTables   <- showTableFunction df
+            return $ Right allTables
+          InvalidStatement -> do
+            return $ Left "Invalid statement"
 
 updateRowsInTable :: ParsedStatement -> DataFrame -> DataFrame
 updateRowsInTable (UpdateStatement _ _ newRow maybeWhereClause) (DataFrame columns rows) =
@@ -386,17 +389,20 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
 -- Statement validation
 
 
-validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> Bool
+validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
 validateStatement stmt tables = case stmt of
-  SelectAll tableNames whereClause -> Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames && validateWhereClause whereClause tables
-  SelectColumns tableNames cols whereClause -> validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
-  SelectAggregate tableNames cols whereClause -> validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
-  InsertStatement tableName cols vals -> validateTableAndColumns [tableName] cols tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip (fromMaybe [] cols) vals)
-  UpdateStatement tableName cols vals whereClause -> validateTableAndColumns [tableName] (Just cols) tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
-  DeleteStatement tableName whereClause -> tableName `Data.List.elem` Data.List.map fst tables && validateWhereClause whereClause tables
-  ShowTablesStatement -> False
-  ShowTableStatement tableName -> Data.List.elem tableName $ Data.List.map fst tables
-  Invalid _ -> False
+  SelectAll tableNames whereClause -> returnError $ Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames && validateWhereClause whereClause tables
+  SelectColumns tableNames cols whereClause -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
+  SelectAggregate tableNames cols whereClause -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
+  InsertStatement tableName cols vals -> returnError $ validateTableAndColumns [tableName] cols tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip (fromMaybe [] cols) vals)
+  UpdateStatement tableName cols vals whereClause -> returnError $ validateTableAndColumns [tableName] (Just cols) tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
+  DeleteStatement tableName whereClause -> returnError $ tableName `Data.List.elem` Data.List.map fst tables && validateWhereClause whereClause tables
+  ShowTablesStatement -> returnError True
+  ShowTableStatement tableName -> returnError $ Data.List.elem tableName $ Data.List.map fst tables
+  Invalid err -> (False, err)
+
+returnError :: Bool -> (Bool, ErrorMessage)
+returnError bool = (bool, "Non existant columns or tables in statement or values dont match column")
 
 validateWhereClause :: Maybe WhereClause -> [(TableName, DataFrame)] -> Bool
 validateWhereClause clause tables = case clause of
@@ -536,7 +542,7 @@ mapStatementType statement = do
       ShowTables -> do
         parseShowTables statement
       InvalidStatement -> do
-        Left "Invalid statement"
+        Left "Invalid statement type"
 
 guessStatementType :: [String] -> Either ErrorMessage StatementType
 guessStatementType (x : y : _)
