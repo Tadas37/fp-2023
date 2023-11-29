@@ -60,8 +60,8 @@ executable fp2023-manipulate
   build-depends:
       aeson
     , base >=4.7 && <5
-    , directory
     , bytestring
+    , directory
     , extra
     , fp2023
     , free
