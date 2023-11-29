@@ -2,7 +2,8 @@ module Main (main) where
 
 import System.Directory (doesFileExist)
 import Data.List (find, isPrefixOf)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (mapMaybe,fromMaybe)
+import Data.List (findIndex)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Free (Free (..), liftF)
 import Data.Functor((<&>))
@@ -15,7 +16,7 @@ import DataFrame
       ColumnType(StringType),
       DataFrame(..),
       Row,
-      Value(StringValue) )
+      Value(StringValue, IntegerValue, BoolValue) )
 import Lib3 qualified
 import Data.Either (partitionEithers)
 import Data.List (intercalate)
@@ -98,6 +99,7 @@ runExecuteIO (Free step) = do
             Lib3.DeleteStatement tableName _ -> return $ next tableName
             Lib3.InsertStatement tableName _ _ -> return $ next tableName
             Lib3.UpdateStatement tableName _ _ _ -> return $ next tableName
+            Lib3.ShowTableStatement tableName -> return $ next tableName
             _ -> error "No table name for non-select statement"
     runStep (Lib3.GetTableNames parsedStatement next) = return $ next $ getTableNames parsedStatement
       where
@@ -123,14 +125,17 @@ runExecuteIO (Free step) = do
     runStep (Lib3.GetReturnTableRows parsedStatement tables timeStamp next) = do
       let rows = case parsedStatement of
             Lib3.SelectAll _ _ -> extractAllRows tables
+            Lib3.SelectColumns tableNames conditions _ -> Lib3.extractSelectedColumnsRows tableNames conditions tables
+            Lib3.SelectAggregate tableNames aggFunc conditions -> Lib3.extractAggregateRows tableNames aggFunc conditions tables
             _ -> error "Unhandled statement type in GetReturnTableRows"
       return $ next rows
       where
         extractAllRows :: [(Lib3.TableName, DataFrame)] -> [Row]
         extractAllRows tbls = concatMap (dfRows . snd) tbls
-    
+  
         dfRows :: DataFrame -> [Row]
         dfRows (DataFrame _ rows) = rows
+  
     runStep (Lib3.ShowTablesFunction tables next) = do
       let column = Column "tableName" StringType
           rows = map (\name -> [StringValue name]) tables
