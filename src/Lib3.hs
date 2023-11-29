@@ -47,6 +47,7 @@ import Data.List
     ( (++),
       zip,
       map,
+      elemIndex,
       elem,
       length,
       null,
@@ -70,7 +71,7 @@ import Data.List
       filter,
       findIndex,
       (!!),
-      isInfixOf )
+      isInfixOf, insert )
 import qualified Data.Yaml as Y
 import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
@@ -79,7 +80,6 @@ import qualified Data.ByteString.Char8 as BS
 import Data.Either (isRight, isLeft)
 import Prelude hiding (zip)
 import Data.Maybe ( mapMaybe, isJust, isNothing, fromMaybe )
-import Data.Aeson.Encoding (value)
 import Control.Monad (zipWithM)
 
 type TableName = String
@@ -1294,25 +1294,45 @@ compareValue _ _ _ = False
 findColumnIndex :: String -> [Column] -> Maybe Int
 findColumnIndex columnName = Data.List.findIndex (\(Column name _) -> name == columnName)
 
--- Validation even if the isStatementValid does validation so probably not needed
+-- Start of insert 
+-- =============================================
 
-createRowFromValues :: Maybe [ColumnName] -> [Column] -> [Value] -> Either String Row
-createRowFromValues maybeSelectedColumns cols values =
-    case maybeSelectedColumns of
-        Just selectedColumns -> Control.Monad.zipWithM (matchValueToColumn cols) selectedColumns values
-        Nothing -> zipWithM matchValueToColumnType cols values
+createRowFromValues :: [ColumnName] -> [Column] -> [Value] -> Either ErrorMessage Row
 
-matchValueToColumn :: [Column] -> ColumnName -> Value -> Either ErrorMessage Value
-matchValueToColumn cols colName value =
-    case Data.List.find (\(Column name _) -> name == colName) cols of
-        Just col -> matchValueToColumnType col value
-        Nothing  -> Left $ "Error: Column " ++ colName ++ " does not exist."
+createRowFromValues insertCols [col] values = do
+  if not (null insertCols || null values) && getColumnName col `elem` insertCols
+    then do
+      let colIndex = fromMaybe (-1) $ Data.List.elemIndex (getColumnName col) insertCols
+      element <- Right $ values !! colIndex
+      return [element]
+    else
+      return [NullValue]
 
-matchValueToColumnType :: Column -> Value -> Either ErrorMessage Value
-matchValueToColumnType (Column _ IntegerType) v@(IntegerValue _) = Right v
-matchValueToColumnType (Column _ StringType) v@(StringValue _) = Right v
-matchValueToColumnType (Column _ BoolType) v@(BoolValue _) = Right v
-matchValueToColumnType _ _ = Left "Mismatched insert column types"
+createRowFromValues insertCols (col : xs) values = do
+  if not (null insertCols || null values) && getColumnName col `elem` insertCols
+    then do
+      let colIndex = fromMaybe (-1) (Data.List.elemIndex (getColumnName col) insertCols)
+      element <- Right $ values !! colIndex
+      rest <- createRowFromValues (removeAtIndex colIndex insertCols) xs (removeAtIndex colIndex values)
+      return $ element : rest
+    else do
+      rest <- createRowFromValues insertCols xs values
+      return $ NullValue : rest
+
+
+createRowFromValues _ _ _ = Left "Should not be here"
+
+getColumnName :: Column -> String
+getColumnName (Column name _) = name
+
+removeAtIndex :: Int -> [a] -> [a]
+removeAtIndex index list
+    | index < 0 || index >= length list = list
+    | otherwise = take index list ++ drop (index + 1) list
+
+
+-- End of Insert 
+-- ========================================================================
 
 extractColumnNames :: SelectedColumns -> [ColumnName]
 extractColumnNames = mapMaybe extractName
@@ -1362,7 +1382,7 @@ extractAggregateRows tableNames aggFuncs whereClause tables =
     in [concat aggregatedRows]
 
 applyAggregateFunction :: [Lib3.SelectColumn] -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Lib3.SelectColumn -> [Value]
-applyAggregateFunction aggFuncs tables whereClause aggFunc =
+applyAggregateFunction _ tables whereClause aggFunc =
     case aggFunc of
         Lib3.Max tableName colName -> [maxAggregate tableName colName tables whereClause]
         Lib3.Avg tableName colName -> [avgAggregate tableName colName tables whereClause]
