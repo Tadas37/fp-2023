@@ -111,6 +111,7 @@ runExecuteIO (Free step) = do
         getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
         getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
         getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
+        
         getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
         getTableNames (Lib3.Invalid _) = []
         getTableNames _ = [] 
@@ -199,11 +200,12 @@ runExecuteIO (Free step) = do
                 case lookup tableName tables of
                     Just (DataFrame cols tableRows) -> do
                         let columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
-                        let newRow = Right row 
+                        let justColumnNames = fromMaybe [] columnNames
+                        let newRow = Lib3.createRowFromValues justColumnNames cols row
                         case newRow of
-                            Right row -> do
-                                let updatedDf = DataFrame cols (tableRows ++ [row])
-                                runStep (Lib3.UpdateTable (tableName, updatedDf) (next (tableName, updatedDf)))
+                            Right rightRow -> do
+                                let updatedDf = DataFrame cols (tableRows ++ [rightRow])
+                                return $ next (tableName, updatedDf)
                             Left errMsg -> error errMsg
                     Nothing -> error $ "Table not found: " ++ tableName
             Lib3.SelectAll _ _ -> error "SelectAll not valid for InsertRows"
