@@ -226,15 +226,16 @@ insertRows :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> (Lib3.Tab
 insertRows (Lib3.InsertStatement tableName maybeSelectedColumns row) tables =
     case lookup tableName tables of
         Just (DataFrame cols tableRows) ->
-            let
-                columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
-                newRow = Right row
-            in
-                case newRow of
-                    Right newRowData ->
-                        let updatedDf = DataFrame cols (tableRows ++ [newRowData])
-                        in (tableName, updatedDf)
-                    Left errMsg -> error errMsg
+          let
+            columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
+            justColumnNames = fromMaybe [] columnNames
+            newRow = Lib3.createRowFromValues justColumnNames cols row
+          in
+            case newRow of
+                Right newRowData ->
+                    let updatedDf = DataFrame cols (tableRows ++ [newRowData])
+                    in (tableName, updatedDf)
+                Left errMsg -> error errMsg
         Nothing -> error $ "Table not found: " ++ tableName
 insertRows (Lib3.SelectAll _ _) _ = error "SelectAll not valid for InsertRows"
 insertRows (Lib3.SelectAggregate _ _ _) _ = error "SelectAggregate not valid for InsertRows"

@@ -85,13 +85,6 @@ runExecuteIO (Free step) = do
         else
           return $ next $ Left "One or more provided tables does not exist"
 
-    runStep (Lib3.ParseTables contents next) = do
-        let parsedTables = map Lib3.parseYAMLContent contents
-        let (errors, tables) = partitionEithers parsedTables
-        if null errors
-            then return $ next tables
-            else error $ "YAML parsing errors: " ++ intercalate "; " errors
-
     runStep (Lib3.UpdateTable (tableName, df) next) = do
         let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
         let yamlContent = Lib3.serializeTableToYAML serializedTable
