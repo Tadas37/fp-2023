@@ -91,11 +91,6 @@ runExecuteIO (Free step) = do
         writeFile (getTableFilePath tableName) yamlContent
         return next
 
-    runStep (Lib3.ParseSql statement next) = 
-      case Lib3.parseStatement statement of
-        Right parsedStatement -> return $ next parsedStatement
-        Left error -> return $ next $ Lib3.Invalid error
-
 
 columnName :: DataFrame.Column -> String
 columnName (DataFrame.Column name _) = name 

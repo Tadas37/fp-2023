@@ -156,13 +156,18 @@ data ExecutionAlgebra next
   = LoadFiles [TableName] (Either ErrorMessage [FileContent] -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
-  | ParseSql SQLQuery (ParsedStatement -> next)
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
 
 loadFiles :: [TableName] -> Execution (Either ErrorMessage [FileContent])
 loadFiles names = liftF $ LoadFiles names id
+
+updateTable :: (TableName, DataFrame) -> Execution ()
+updateTable table = liftF $ UpdateTable table ()
+
+getTime :: Execution UTCTime
+getTime = liftF $ GetTime id
 
 parseTables :: [FileContent] -> Either String [(TableName, DataFrame)]
 parseTables contents = 
@@ -179,15 +184,11 @@ getTableDfByName tableName tables =
         Just df -> Right df
         Nothing -> Left $ "Table not found: " ++ tableName
 
-
-updateTable :: (TableName, DataFrame) -> Execution ()
-updateTable table = liftF $ UpdateTable table ()
-
-getTime :: Execution UTCTime
-getTime = liftF $ GetTime id
-
-parseSql :: SQLQuery -> Execution ParsedStatement
-parseSql query = liftF $ ParseSql query id
+parseSql :: SQLQuery -> Either ErrorMessage ParsedStatement
+parseSql query = 
+    case parseStatement query of
+        Right parsedStatement -> Right parsedStatement
+        Left error -> Left error
 
 getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
 getTableNames (Lib3.SelectAll tableNames _) = tableNames
@@ -304,49 +305,51 @@ showTableFunction (DataFrame columns _) =
 
 
 executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
-executeSql statement = do
-  parsedStatement <- parseSql statement
-  let tableNames = getTableNames parsedStatement
-  tableFiles <- loadFiles tableNames
-  case tableFiles of
-    Left err -> return $ Left err
-    Right content -> 
-      case parseTables content of
-        Left parseErr -> return $ Left parseErr
-        Right tables -> do
-          let statementType = getStatementType statement
-          timeStamp     <- getTime
-          let (isValid, errorMessage) = validateStatement parsedStatement tables
-          if not isValid
-            then return $ Left errorMessage
-            else
-            case statementType of
-              Select -> do
-                let columns = getSelectedColumns parsedStatement tables
-                let rows = getReturnTableRows parsedStatement tables timeStamp
-                let df = generateDataFrame columns rows
-                return $ Right df
-              Delete -> do
-                let (name, df) = deleteRows parsedStatement tables
-                updateTable (name, df)
-                return $ Right df
-              Insert -> do
-                let (name, df) = insertRows parsedStatement tables
-                updateTable (name, df)
-                return $ Right df
-              Update -> do
-                let updatedTable = updateRows parsedStatement tables
-                case updatedTable of
-                    Just (name, df) -> do
+executeSql statement = 
+  case parseSql statement of
+        Left err -> return $ Left err
+        Right parsedStatement -> do
+          let tableNames = getTableNames parsedStatement
+          tableFiles <- loadFiles tableNames
+          case tableFiles of
+            Left err -> return $ Left err
+            Right content -> 
+              case parseTables content of
+                Left parseErr -> return $ Left parseErr
+                Right tables -> do
+                  let statementType = getStatementType statement
+                  timeStamp     <- getTime
+                  let (isValid, errorMessage) = validateStatement parsedStatement tables
+                  if not isValid
+                    then return $ Left errorMessage
+                    else
+                    case statementType of
+                      Select -> do
+                        let columns = getSelectedColumns parsedStatement tables
+                        let rows = getReturnTableRows parsedStatement tables timeStamp
+                        let df = generateDataFrame columns rows
+                        return $ Right df
+                      Delete -> do
+                        let (name, df) = deleteRows parsedStatement tables
                         updateTable (name, df)
                         return $ Right df
-                    Nothing -> return $ Left "Table not found for updating rows"
-              ShowTables -> do
-                let allTables = showTablesFunction tableNames
-                return $ Right allTables
-              ShowTable -> executeShowTable parsedStatement tables
-              InvalidStatement -> return $ Left "Invalid statement"
-        
+                      Insert -> do
+                        let (name, df) = insertRows parsedStatement tables
+                        updateTable (name, df)
+                        return $ Right df
+                      Update -> do
+                        let updatedTable = updateRows parsedStatement tables
+                        case updatedTable of
+                            Just (name, df) -> do
+                                updateTable (name, df)
+                                return $ Right df
+                            Nothing -> return $ Left "Table not found for updating rows"
+                      ShowTables -> do
+                        let allTables = showTablesFunction tableNames
+                        return $ Right allTables
+                      ShowTable -> executeShowTable parsedStatement tables
+                      InvalidStatement -> return $ Left "Invalid statement"
+          where    
 executeShowTable :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Either ErrorMessage DataFrame)
 executeShowTable parsedStatement tables = do
   let nonSelectTableName = getNonSelectTableNameFromStatement parsedStatement
