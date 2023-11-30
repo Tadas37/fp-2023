@@ -75,7 +75,7 @@ import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
 import qualified Data.Aeson.Key as Key
 import qualified Data.ByteString.Char8 as BS
-import Data.Either (isRight, isLeft)
+import Data.Either (isRight, isLeft, partitionEithers)
 import Prelude hiding (zip)
 import Data.Maybe ( mapMaybe, isJust, isNothing, fromMaybe )
 
@@ -154,8 +154,6 @@ data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables 
 
 data ExecutionAlgebra next
   = LoadFiles [TableName] (Either ErrorMessage [FileContent] -> next)
-  | ParseTables [FileContent] ([(TableName, DataFrame)] -> next)
-  | GetTableDfByName TableName [(TableName, DataFrame)] (DataFrame -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
   | GetStatementType SQLQuery (StatementType -> next)
@@ -178,11 +176,21 @@ type Execution = Free ExecutionAlgebra
 loadFiles :: [TableName] -> Execution (Either ErrorMessage [FileContent])
 loadFiles names = liftF $ LoadFiles names id
 
-parseTables :: [FileContent] -> Execution [(TableName, DataFrame)]
-parseTables content = liftF $ ParseTables content id
+parseTables :: [FileContent] -> Either String [(TableName, DataFrame)]
+parseTables contents = 
+    let parsedTables = map parseYAMLContent contents
+        (errors, tables) = partitionEithers parsedTables
+    in if null errors
+        then Right tables
+        else Left $ "YAML parsing errors: " ++ intercalate "; " errors
 
-getTableDfByName :: TableName -> [(TableName, DataFrame)] -> Execution DataFrame
-getTableDfByName tableName tables = liftF $ GetTableDfByName tableName tables id
+
+getTableDfByName :: TableName -> [(TableName, DataFrame)] -> Either ErrorMessage DataFrame
+getTableDfByName tableName tables =
+    case lookup tableName tables of
+        Just df -> Right df
+        Nothing -> Left $ "Table not found: " ++ tableName
+
 
 updateTable :: (TableName, DataFrame) -> Execution ()
 updateTable table = liftF $ UpdateTable table ()
@@ -236,42 +244,53 @@ executeSql statement = do
   tableFiles <- loadFiles tableNames
   case tableFiles of
     Left err -> return $ Left err
-    Right content -> do
-      tables <- parseTables content
-      statementType <- getStatementType statement
-      timeStamp     <- getTime
-      (isValid, errorMessage) <- isParsedStatementValid parsedStatement tables
-      if not isValid
-        then return $ Left errorMessage
-        else
-        case statementType of
-          Select -> do
-            columns     <- getSelectedColumns parsedStatement tables
-            rows        <- getReturnTableRows parsedStatement tables timeStamp
-            df          <- generateDataFrame columns rows
-            return $ Right df
-          Delete -> do
-            (name, df)  <- deleteRows parsedStatement tables
-            updateTable (name, df)
-            return $ Right df
-          Insert -> do
-            (name, df)  <- insertRows parsedStatement tables
-            updateTable (name, df)
-            return $ Right df
-          Update -> do
-            (name, df)  <- updateRows parsedStatement tables
-            updateTable (name, df)
-            return $ Right df
-          ShowTables -> do
-            allTables   <- showTablesFunction tableNames
-            return $ Right allTables
-          ShowTable -> do
-            nonSelectTableName <- getNonSelectTableName parsedStatement
-            df          <- getTableDfByName nonSelectTableName tables
-            allTables   <- showTableFunction df
-            return $ Right allTables
-          InvalidStatement -> do
-            return $ Left "Invalid statement"
+    Right content -> 
+      case parseTables content of
+        Left parseErr -> return $ Left parseErr
+        Right tables -> do
+          statementType <- getStatementType statement
+          timeStamp     <- getTime
+          (isValid, errorMessage) <- isParsedStatementValid parsedStatement tables
+          if not isValid
+            then return $ Left errorMessage
+            else
+            case statementType of
+              Select -> do
+                columns     <- getSelectedColumns parsedStatement tables
+                rows        <- getReturnTableRows parsedStatement tables timeStamp
+                df          <- generateDataFrame columns rows
+                return $ Right df
+              Delete -> do
+                (name, df)  <- deleteRows parsedStatement tables
+                updateTable (name, df)
+                return $ Right df
+              Insert -> do
+                (name, df)  <- insertRows parsedStatement tables
+                updateTable (name, df)
+                return $ Right df
+              Update -> do
+                (name, df)  <- updateRows parsedStatement tables
+                updateTable (name, df)
+                return $ Right df
+              ShowTables -> do
+                allTables   <- showTablesFunction tableNames
+                return $ Right allTables
+              ShowTable -> executeShowTable parsedStatement tables
+              InvalidStatement -> return $ Left "Invalid statement"
+         
+executeShowTable :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Either ErrorMessage DataFrame)
+executeShowTable parsedStatement tables = do
+  let nonSelectTableName = getNonSelectTableNameFromStatement parsedStatement
+  case getTableDfByName nonSelectTableName tables of
+    Left errMsg -> return $ Left errMsg
+    Right df -> do
+      allTables <- showTableFunction df
+      return $ Right allTables
+
+getNonSelectTableNameFromStatement :: ParsedStatement -> TableName
+getNonSelectTableNameFromStatement (ShowTableStatement tableName) = tableName
+getNonSelectTableNameFromStatement _ = error "Non-select statement expected"
+
 
 updateRowsInTable :: ParsedStatement -> DataFrame -> DataFrame
 updateRowsInTable (UpdateStatement _ _ newRow maybeWhereClause) (DataFrame columns rows) =

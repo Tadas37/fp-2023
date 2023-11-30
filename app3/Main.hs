@@ -84,16 +84,7 @@ runExecuteIO (Free step) = do
           return $ next $ Right fileContents
         else
           return $ next $ Left "One or more provided tables does not exist"
-    runStep (Lib3.ParseTables contents next) = do
-        let parsedTables = map Lib3.parseYAMLContent contents
-        let (errors, tables) = partitionEithers parsedTables
-        if null errors
-            then return $ next tables
-            else error $ "YAML parsing errors: " ++ intercalate "; " errors
-    runStep (Lib3.GetTableDfByName tableName tables next) =
-        case lookup tableName tables of
-            Just df -> return $ next df
-            Nothing -> error $ "Table not found: " ++ tableName
+
     runStep (Lib3.GetNotSelectTableName statement next) =
         case statement of
             Lib3.DeleteStatement tableName _ -> return $ next tableName
