@@ -155,10 +155,6 @@ data ExecutionAlgebra next
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
   | ParseSql SQLQuery (ParsedStatement -> next)
-  | DeleteRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
-  | InsertRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
-  | UpdateRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
-  | ShowTableFunction DataFrame (DataFrame -> next)
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
@@ -203,11 +199,49 @@ getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
 getTableNames (Lib3.Invalid _) = []
 getTableNames _ = [] 
 
-deleteRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
-deleteRows statement tables = liftF $ DeleteRows statement tables id
 
-insertRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
-insertRows statement tables = liftF $ InsertRows statement tables id
+deleteRows :: ParsedStatement -> [(TableName, DataFrame)] -> (TableName, DataFrame)
+deleteRows (DeleteStatement tableName maybeWhereClause) tables =
+    case lookup tableName tables of
+        Just df ->
+            case maybeWhereClause of
+                Just whereClause ->
+                    case Lib3.filterRows df maybeWhereClause of
+                        Right dfFiltered -> (tableName, dfFiltered)
+                        Left errMsg -> error errMsg
+                Nothing -> (tableName, df) 
+        Nothing -> error $ "Table not found: " ++ tableName
+deleteRows (SelectAll _ _) _ = error "SelectAll not valid for DeleteRows"
+deleteRows (SelectAggregate _ _ _) _ = error "SelectAggregate not valid for DeleteRows"
+deleteRows (SelectColumns _ _ _) _ = error "SelectColumns not valid for DeleteRows"
+deleteRows (InsertStatement _ _ _) _ = error "InsertStatement not valid for DeleteRows"
+deleteRows (UpdateStatement _ _ _ _) _ = error "UpdateStatement not valid for DeleteRows"
+deleteRows (ShowTableStatement _) _ = error "ShowTableStatement not valid for DeleteRows"
+deleteRows ShowTablesStatement _ = error "ShowTablesStatement not valid for DeleteRows"
+deleteRows (Invalid _) _ = error "Invalid statement cannot be processed in DeleteRows"
+
+insertRows :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> (Lib3.TableName, DataFrame)
+insertRows (Lib3.InsertStatement tableName maybeSelectedColumns row) tables =
+    case lookup tableName tables of
+        Just (DataFrame cols tableRows) ->
+            let
+                columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
+                newRow = Right row
+            in
+                case newRow of
+                    Right newRowData ->
+                        let updatedDf = DataFrame cols (tableRows ++ [newRowData])
+                        in (tableName, updatedDf)
+                    Left errMsg -> error errMsg
+        Nothing -> error $ "Table not found: " ++ tableName
+insertRows (Lib3.SelectAll _ _) _ = error "SelectAll not valid for InsertRows"
+insertRows (Lib3.SelectAggregate _ _ _) _ = error "SelectAggregate not valid for InsertRows"
+insertRows (Lib3.SelectColumns _ _ _) _ = error "SelectColumns not valid for InsertRows"
+insertRows (Lib3.DeleteStatement _ _) _ = error "DeleteStatement not valid for InsertRows"
+insertRows (Lib3.UpdateStatement _ _ _ _) _ = error "UpdateStatement not valid for InsertRows"
+insertRows (Lib3.ShowTableStatement _) _ = error "ShowTableStatement not valid for InsertRows"
+insertRows Lib3.ShowTablesStatement _ = error "ShowTablesStatement not valid for InsertRows"
+insertRows (Lib3.Invalid _) _ = error "Invalid statement cannot be processed in InsertRows"
 
 updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Maybe (TableName, DataFrame)
 updateRows (UpdateStatement tableName selectedColumns newRow maybeWhereClause) tables =
@@ -290,11 +324,11 @@ executeSql statement = do
                 let df = generateDataFrame columns rows
                 return $ Right df
               Delete -> do
-                (name, df)  <- deleteRows parsedStatement tables
+                let (name, df) = deleteRows parsedStatement tables
                 updateTable (name, df)
                 return $ Right df
               Insert -> do
-                (name, df)  <- insertRows parsedStatement tables
+                let (name, df) = insertRows parsedStatement tables
                 updateTable (name, df)
                 return $ Right df
               Update -> do
