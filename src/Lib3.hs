@@ -17,7 +17,6 @@ module Lib3
     serializeTableToYAML,
     validateStatement,
     SerializedTable(..),
-    getSelectedColumnsFunction,
     updateRowsInTable,
     parseStatement,
     filterRows,
@@ -33,8 +32,6 @@ module Lib3
     WhereClause(..),
     Condition(..),
     ConditionValue(..),
-    getStatementType1,
-    createRowFromValues,
   )
 where
 
@@ -77,7 +74,7 @@ import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
 import qualified Data.Aeson.Key as Key
 import qualified Data.ByteString.Char8 as BS
-import Data.Either (isRight, isLeft)
+import Data.Either (isRight, isLeft, partitionEithers)
 import Prelude hiding (zip)
 import Data.Maybe ( mapMaybe, isJust, isNothing, fromMaybe )
 import Control.Monad (zipWithM)
@@ -157,23 +154,9 @@ data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables 
 
 data ExecutionAlgebra next
   = LoadFiles [TableName] (Either ErrorMessage [FileContent] -> next)
-  | ParseTables [FileContent] ([(TableName, DataFrame)] -> next)
-  | GetTableDfByName TableName [(TableName, DataFrame)] (DataFrame -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
-  | GetStatementType SQLQuery (StatementType -> next)
   | ParseSql SQLQuery (ParsedStatement -> next)
-  | IsParsedStatementValid ParsedStatement [(TableName, DataFrame)] ((Bool, ErrorMessage) -> next)
-  | GetTableNames ParsedStatement ([TableName] -> next)
-  | DeleteRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
-  | InsertRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
-  | UpdateRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
-  | GetSelectedColumns ParsedStatement [(TableName, DataFrame)] ([Column] -> next)
-  | GetReturnTableRows ParsedStatement [(TableName, DataFrame)] UTCTime ([Row] -> next)
-  | GenerateDataFrame [Column] [Row] (DataFrame -> next)
-  | ShowTablesFunction [TableName] (DataFrame -> next)
-  | ShowTableFunction DataFrame (DataFrame -> next)
-  | GetNotSelectTableName ParsedStatement (TableName -> next)
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
@@ -181,11 +164,21 @@ type Execution = Free ExecutionAlgebra
 loadFiles :: [TableName] -> Execution (Either ErrorMessage [FileContent])
 loadFiles names = liftF $ LoadFiles names id
 
-parseTables :: [FileContent] -> Execution [(TableName, DataFrame)]
-parseTables content = liftF $ ParseTables content id
+parseTables :: [FileContent] -> Either String [(TableName, DataFrame)]
+parseTables contents = 
+    let parsedTables = map parseYAMLContent contents
+        (errors, tables) = partitionEithers parsedTables
+    in if null errors
+        then Right tables
+        else Left $ "YAML parsing errors: " ++ intercalate "; " errors
 
-getTableDfByName :: TableName -> [(TableName, DataFrame)] -> Execution DataFrame
-getTableDfByName tableName tables = liftF $ GetTableDfByName tableName tables id
+
+getTableDfByName :: TableName -> [(TableName, DataFrame)] -> Either ErrorMessage DataFrame
+getTableDfByName tableName tables =
+    case lookup tableName tables of
+        Just df -> Right df
+        Nothing -> Left $ "Table not found: " ++ tableName
+
 
 updateTable :: (TableName, DataFrame) -> Execution ()
 updateTable table = liftF $ UpdateTable table ()
@@ -193,88 +186,179 @@ updateTable table = liftF $ UpdateTable table ()
 getTime :: Execution UTCTime
 getTime = liftF $ GetTime id
 
-getStatementType :: SQLQuery -> Execution StatementType
-getStatementType query = liftF $ GetStatementType query id
-
 parseSql :: SQLQuery -> Execution ParsedStatement
 parseSql query = liftF $ ParseSql query id
 
-isParsedStatementValid :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Bool, ErrorMessage)
-isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables id
+getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
+getTableNames (Lib3.SelectAll tableNames _) = tableNames
+getTableNames (Lib3.SelectAggregate tableNames _ _) = tableNames
+getTableNames (Lib3.SelectColumns tableNames _ _) = tableNames
+getTableNames (Lib3.DeleteStatement tableName _) = [tableName]
+getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
+getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
+getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
+getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
+getTableNames (Lib3.Invalid _) = []
+getTableNames _ = [] 
 
-getTableNames :: ParsedStatement -> Execution [TableName]
-getTableNames statement = liftF $ GetTableNames statement id
 
-deleteRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
-deleteRows statement tables = liftF $ DeleteRows statement tables id
+deleteRows :: ParsedStatement -> [(TableName, DataFrame)] -> (TableName, DataFrame)
+deleteRows (DeleteStatement tableName maybeWhereClause) tables =
+    case lookup tableName tables of
+        Just df ->
+            case maybeWhereClause of
+                Just whereClause ->
+                    case Lib3.filterRows df maybeWhereClause of
+                        Right dfFiltered -> (tableName, dfFiltered)
+                        Left errMsg -> error errMsg
+                Nothing -> (tableName, df) 
+        Nothing -> error $ "Table not found: " ++ tableName
+deleteRows (SelectAll _ _) _ = error "SelectAll not valid for DeleteRows"
+deleteRows (SelectAggregate _ _ _) _ = error "SelectAggregate not valid for DeleteRows"
+deleteRows (SelectColumns _ _ _) _ = error "SelectColumns not valid for DeleteRows"
+deleteRows (InsertStatement _ _ _) _ = error "InsertStatement not valid for DeleteRows"
+deleteRows (UpdateStatement _ _ _ _) _ = error "UpdateStatement not valid for DeleteRows"
+deleteRows (ShowTableStatement _) _ = error "ShowTableStatement not valid for DeleteRows"
+deleteRows ShowTablesStatement _ = error "ShowTablesStatement not valid for DeleteRows"
+deleteRows (Invalid _) _ = error "Invalid statement cannot be processed in DeleteRows"
 
-insertRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
-insertRows statement tables = liftF $ InsertRows statement tables id
+insertRows :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> (Lib3.TableName, DataFrame)
+insertRows (Lib3.InsertStatement tableName maybeSelectedColumns row) tables =
+    case lookup tableName tables of
+        Just (DataFrame cols tableRows) ->
+            let
+                columnNames = fmap Lib3.extractColumnNames maybeSelectedColumns
+                newRow = Right row
+            in
+                case newRow of
+                    Right newRowData ->
+                        let updatedDf = DataFrame cols (tableRows ++ [newRowData])
+                        in (tableName, updatedDf)
+                    Left errMsg -> error errMsg
+        Nothing -> error $ "Table not found: " ++ tableName
+insertRows (Lib3.SelectAll _ _) _ = error "SelectAll not valid for InsertRows"
+insertRows (Lib3.SelectAggregate _ _ _) _ = error "SelectAggregate not valid for InsertRows"
+insertRows (Lib3.SelectColumns _ _ _) _ = error "SelectColumns not valid for InsertRows"
+insertRows (Lib3.DeleteStatement _ _) _ = error "DeleteStatement not valid for InsertRows"
+insertRows (Lib3.UpdateStatement _ _ _ _) _ = error "UpdateStatement not valid for InsertRows"
+insertRows (Lib3.ShowTableStatement _) _ = error "ShowTableStatement not valid for InsertRows"
+insertRows Lib3.ShowTablesStatement _ = error "ShowTablesStatement not valid for InsertRows"
+insertRows (Lib3.Invalid _) _ = error "Invalid statement cannot be processed in InsertRows"
 
-updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
-updateRows statement tables = liftF $ UpdateRows statement tables id
+updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Maybe (TableName, DataFrame)
+updateRows (UpdateStatement tableName selectedColumns newRow maybeWhereClause) tables =
+    case lookup tableName tables of
+        Just df -> Just (tableName, updateRowsInTable df newRow maybeWhereClause)
+        Nothing -> Nothing
+    where
+        updateRowsInTable :: DataFrame -> Row -> Maybe WhereClause -> DataFrame
+        updateRowsInTable (DataFrame columns rows) newRow whereClause =
+            let updatedRows = map (updateRowIfMatches newRow whereClause) rows
+            in DataFrame columns updatedRows
 
-getSelectedColumns :: ParsedStatement -> [(TableName, DataFrame)] -> Execution [Column]
-getSelectedColumns statement tables = liftF $ GetSelectedColumns statement tables id
+        updateRowIfMatches :: Row -> Maybe WhereClause -> Row -> Row
+        updateRowIfMatches newRow Nothing _ = newRow
+        updateRowIfMatches newRow (Just whereClause) row =
+            if rowMatchesWhereClause row whereClause
+            then newRow
+            else row
 
-getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> Execution [Row]
-getReturnTableRows parsedStatement usedTables time = liftF $ GetReturnTableRows parsedStatement usedTables time id
+        rowMatchesWhereClause :: Row -> WhereClause -> Bool
+        -- Implementation for matching a row with a where clause
+        rowMatchesWhereClause _ _ = False -- Placeholder, implement based on your WhereClause definition
 
-generateDataFrame :: [Column] -> [Row] -> Execution DataFrame
-generateDataFrame columns rows = liftF $ GenerateDataFrame columns rows id
+updateRows _ _ = Nothing
 
-showTablesFunction :: [TableName] -> Execution DataFrame
-showTablesFunction tables = liftF $ ShowTablesFunction tables id
 
-showTableFunction :: DataFrame -> Execution DataFrame
-showTableFunction table = liftF $ ShowTableFunction table id
+getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> [Row]
+getReturnTableRows parsedStatement tables timeStamp = 
+    case parsedStatement of
+        SelectAll _ _ -> extractAllRows tables
+        SelectColumns tableNames conditions _ -> Lib3.extractSelectedColumnsRows tableNames conditions tables
+        SelectAggregate tableNames aggFunc conditions -> Lib3.extractAggregateRows tableNames aggFunc conditions tables
+        _ -> error "Unhandled statement type in getReturnTableRows"
+    where
+        extractAllRows :: [(TableName, DataFrame)] -> [Row]
+        extractAllRows tbls = concatMap (dfRows . snd) tbls
 
-getNonSelectTableName :: ParsedStatement -> Execution TableName
-getNonSelectTableName statement = liftF $ GetNotSelectTableName statement id
+        dfRows :: DataFrame -> [Row]
+        dfRows (DataFrame _ rows) = rows
+
+
+generateDataFrame :: [Column] -> [Row] -> DataFrame
+generateDataFrame columns rows = DataFrame columns rows
+
+showTablesFunction :: [TableName] -> DataFrame
+showTablesFunction tables = 
+    let column = Column "tableName" StringType
+        rows = map (\name -> [StringValue name]) tables
+    in DataFrame [column] rows
+
+
+showTableFunction :: DataFrame -> DataFrame
+showTableFunction (DataFrame columns _) =
+    let newDf = DataFrame [Column "ColumnNames" StringType] 
+                          (map (\(Column colName _) -> [StringValue colName]) columns)
+    in newDf
+
 
 executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
 executeSql statement = do
   parsedStatement <- parseSql statement
-  tableNames <- getTableNames parsedStatement
+  let tableNames = getTableNames parsedStatement
   tableFiles <- loadFiles tableNames
   case tableFiles of
     Left err -> return $ Left err
-    Right content -> do
-      tables <- parseTables content
-      statementType <- getStatementType statement
-      timeStamp     <- getTime
-      (isValid, errorMessage) <- isParsedStatementValid parsedStatement tables
-      if not isValid
-        then return $ Left errorMessage
-        else
-        case statementType of
-          Select -> do
-            columns     <- getSelectedColumns parsedStatement tables
-            rows        <- getReturnTableRows parsedStatement tables timeStamp
-            df          <- generateDataFrame columns rows
-            return $ Right df
-          Delete -> do
-            (name, df)  <- deleteRows parsedStatement tables
-            updateTable (name, df)
-            return $ Right df
-          Insert -> do
-            (name, df)  <- insertRows parsedStatement tables
-            updateTable (name, df)
-            return $ Right df
-          Update -> do
-            (name, df)  <- updateRows parsedStatement tables
-            updateTable (name, df)
-            return $ Right df
-          ShowTables -> do
-            allTables   <- showTablesFunction tableNames
-            return $ Right allTables
-          ShowTable -> do
-            nonSelectTableName <- getNonSelectTableName parsedStatement
-            df          <- getTableDfByName nonSelectTableName tables
-            allTables   <- showTableFunction df
-            return $ Right allTables
-          InvalidStatement -> do
-            return $ Left "Invalid statement"
+    Right content -> 
+      case parseTables content of
+        Left parseErr -> return $ Left parseErr
+        Right tables -> do
+          let statementType = getStatementType statement
+          timeStamp     <- getTime
+          let (isValid, errorMessage) = validateStatement parsedStatement tables
+          if not isValid
+            then return $ Left errorMessage
+            else
+            case statementType of
+              Select -> do
+                let columns = getSelectedColumns parsedStatement tables
+                let rows = getReturnTableRows parsedStatement tables timeStamp
+                let df = generateDataFrame columns rows
+                return $ Right df
+              Delete -> do
+                let (name, df) = deleteRows parsedStatement tables
+                updateTable (name, df)
+                return $ Right df
+              Insert -> do
+                let (name, df) = insertRows parsedStatement tables
+                updateTable (name, df)
+                return $ Right df
+              Update -> do
+                let updatedTable = updateRows parsedStatement tables
+                case updatedTable of
+                    Just (name, df) -> do
+                        updateTable (name, df)
+                        return $ Right df
+                    Nothing -> return $ Left "Table not found for updating rows"
+              ShowTables -> do
+                let allTables = showTablesFunction tableNames
+                return $ Right allTables
+              ShowTable -> executeShowTable parsedStatement tables
+              InvalidStatement -> return $ Left "Invalid statement"
+        
+executeShowTable :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Either ErrorMessage DataFrame)
+executeShowTable parsedStatement tables = do
+  let nonSelectTableName = getNonSelectTableNameFromStatement parsedStatement
+  case getTableDfByName nonSelectTableName tables of
+    Left errMsg -> return $ Left errMsg
+    Right df -> do
+      let allTables = showTableFunction df
+      return $ Right allTables
+
+getNonSelectTableNameFromStatement :: ParsedStatement -> TableName
+getNonSelectTableNameFromStatement (ShowTableStatement tableName) = tableName
+getNonSelectTableNameFromStatement _ = error "Non-select statement expected"
+
 
 updateRowsInTable :: ParsedStatement -> DataFrame -> DataFrame
 updateRowsInTable (UpdateStatement _ _ newRow maybeWhereClause) (DataFrame columns rows) =
@@ -317,8 +401,8 @@ convertColumnType dt = case dt of
 convertRows :: [[Y.Value]] -> [Row]
 convertRows = Data.List.map (Data.List.map convertValue)
 
-getStatementType1 :: String -> StatementType
-getStatementType1 query
+getStatementType :: String -> StatementType
+getStatementType query 
     | "select" `isPrefixOf` lowerQuery = if "show" `isPrefixOf` lowerQuery then ShowTable else Select
     | "insert" `isPrefixOf` lowerQuery = Insert
     | "update" `isPrefixOf` lowerQuery = Update
@@ -502,8 +586,8 @@ columnExistsInDataFrame Now _ = True
 -- End of StatementValidation
 
 
-getSelectedColumnsFunction :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
-getSelectedColumnsFunction stmt tbls = case stmt of
+getSelectedColumns :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
+getSelectedColumns stmt tbls = case stmt of
     Lib3.SelectAll tableNames _ -> Data.List.concatMap (getTableColumns tbls) tableNames
     Lib3.SelectColumns _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
     _ -> []
