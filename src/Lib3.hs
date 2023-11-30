@@ -17,7 +17,6 @@ module Lib3
     serializeTableToYAML,
     validateStatement,
     SerializedTable(..),
-    getSelectedColumnsFunction,
     updateRowsInTable,
     parseStatement,
     filterRows,
@@ -160,8 +159,6 @@ data ExecutionAlgebra next
   | DeleteRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | InsertRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | UpdateRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
-  | GetSelectedColumns ParsedStatement [(TableName, DataFrame)] ([Column] -> next)
-  | ShowTablesFunction [TableName] (DataFrame -> next)
   | ShowTableFunction DataFrame (DataFrame -> next)
   deriving Functor
 
@@ -219,8 +216,6 @@ insertRows statement tables = liftF $ InsertRows statement tables id
 updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
 updateRows statement tables = liftF $ UpdateRows statement tables id
 
-getSelectedColumns :: ParsedStatement -> [(TableName, DataFrame)] -> Execution [Column]
-getSelectedColumns statement tables = liftF $ GetSelectedColumns statement tables id
 
 getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> [Row]
 getReturnTableRows parsedStatement tables timeStamp = 
@@ -240,11 +235,18 @@ getReturnTableRows parsedStatement tables timeStamp =
 generateDataFrame :: [Column] -> [Row] -> DataFrame
 generateDataFrame columns rows = DataFrame columns rows
 
-showTablesFunction :: [TableName] -> Execution DataFrame
-showTablesFunction tables = liftF $ ShowTablesFunction tables id
+showTablesFunction :: [TableName] -> DataFrame
+showTablesFunction tables = 
+    let column = Column "tableName" StringType
+        rows = map (\name -> [StringValue name]) tables
+    in DataFrame [column] rows
 
-showTableFunction :: DataFrame -> Execution DataFrame
-showTableFunction table = liftF $ ShowTableFunction table id
+
+showTableFunction :: DataFrame -> DataFrame
+showTableFunction (DataFrame columns _) =
+    let newDf = DataFrame [Column "ColumnNames" StringType] 
+                          (map (\(Column colName _) -> [StringValue colName]) columns)
+    in newDf
 
 
 executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
@@ -266,7 +268,7 @@ executeSql statement = do
             else
             case statementType of
               Select -> do
-                columns     <- getSelectedColumns parsedStatement tables
+                let columns = getSelectedColumns parsedStatement tables
                 let rows = getReturnTableRows parsedStatement tables timeStamp
                 let df = generateDataFrame columns rows
                 return $ Right df
@@ -283,7 +285,7 @@ executeSql statement = do
                 updateTable (name, df)
                 return $ Right df
               ShowTables -> do
-                allTables   <- showTablesFunction tableNames
+                let allTables = showTablesFunction tableNames
                 return $ Right allTables
               ShowTable -> executeShowTable parsedStatement tables
               InvalidStatement -> return $ Left "Invalid statement"
@@ -294,7 +296,7 @@ executeShowTable parsedStatement tables = do
   case getTableDfByName nonSelectTableName tables of
     Left errMsg -> return $ Left errMsg
     Right df -> do
-      allTables <- showTableFunction df
+      let allTables = showTableFunction df
       return $ Right allTables
 
 getNonSelectTableNameFromStatement :: ParsedStatement -> TableName
@@ -528,8 +530,8 @@ columnExistsInDataFrame Now _ = True
 -- End of StatementValidation
 
 
-getSelectedColumnsFunction :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
-getSelectedColumnsFunction stmt tbls = case stmt of
+getSelectedColumns :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
+getSelectedColumns stmt tbls = case stmt of
     Lib3.SelectAll tableNames _ -> Data.List.concatMap (getTableColumns tbls) tableNames
     Lib3.SelectColumns _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
     _ -> []

@@ -91,19 +91,6 @@ runExecuteIO (Free step) = do
         return next
 
 
-  
-    runStep (Lib3.ShowTablesFunction tables next) = do
-      let column = Column "tableName" StringType
-          rows = map (\name -> [StringValue name]) tables
-      let df = DataFrame [column] rows
-      return (next df)
-    runStep (Lib3.ShowTableFunction (DataFrame.DataFrame columns _) next) = do
-        let newDf = DataFrame.DataFrame [DataFrame.Column "ColumnNames" DataFrame.StringType] 
-                                        (map (\colName -> [DataFrame.StringValue colName]) (map columnName columns))
-        return $ next newDf
-    runStep (Lib3.GetSelectedColumns parsedStatement tables next) =
-        return $ next $ Lib3.getSelectedColumnsFunction parsedStatement tables
-        
     runStep (Lib3.IsParsedStatementValid parsedStatement tables next) = do
       let isValid = Lib3.validateStatement parsedStatement tables
       return $ next isValid
