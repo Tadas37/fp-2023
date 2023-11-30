@@ -19,9 +19,10 @@ module Lib3
     SerializedTable(..),
     getSelectedColumnsFunction,
     updateRowsInTable,
+    updateRowValues,
     parseStatement,
     filterRows,
-    filterDataFrame,
+    deleteRowsFromDataFrame,
     rowSatisfiesWhereClause,
     conditionSatisfied,
     compareWithCondition,
@@ -275,25 +276,6 @@ executeSql statement = do
             return $ Right allTables
           InvalidStatement -> do
             return $ Left "Invalid statement"
-
-updateRowsInTable :: ParsedStatement -> DataFrame -> DataFrame
-updateRowsInTable (UpdateStatement _ _ newRow maybeWhereClause) (DataFrame columns rows) =
-   DataFrame columns (Data.List.map (updateRowIfMatches newRow maybeWhereClause) rows)
-updateRowsInTable _ df = df
-
-updateRowIfMatches :: Row -> Maybe WhereClause -> Row -> Row
-updateRowIfMatches newRow (Just whereClause) row =
-    if rowMatchesWhereClause row whereClause
-    then newRow
-    else row
-updateRowIfMatches newRow Nothing _ = newRow
-
-rowMatchesWhereClause :: Row -> WhereClause -> Bool
-rowMatchesWhereClause _ (IsValueBool {}) = False
-rowMatchesWhereClause row (Conditions conditions) = Data.List.all (rowMatchesCondition row) conditions
-
-rowMatchesCondition :: Row -> Condition -> Bool
-rowMatchesCondition _ (Equals (TableColumn _ _) (IntValue _)) = False
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content =
@@ -1220,7 +1202,7 @@ wordToLowerSensitive word
 filterRows :: DataFrame -> Maybe WhereClause -> Either String DataFrame
 filterRows df@(DataFrame cols _) (Just wc) =
     if whereClauseHasValidColumns wc cols
-    then filterDataFrame df wc
+    then deleteRowsFromDataFrame df wc
     else Left "Error: Specified column in WhereClause does not exist."
 filterRows (DataFrame cols _) Nothing = Right $ DataFrame cols []
 
@@ -1241,16 +1223,14 @@ columnNameFromCondition (NotEqual colName _) = extractColumnName colName
 
 extractColumnName :: SelectColumn -> String
 extractColumnName (TableColumn _ colName) = colName
-
 extractColumnName _ = error "Unsupported SelectColumn type for condition"
 
-
-filterDataFrame :: DataFrame -> WhereClause -> Either String DataFrame
-filterDataFrame (DataFrame cols rows) wc =
-    let filteredRows = Data.List.filter (rowSatisfiesWhereClause wc cols) rows
-    in if Data.List.null filteredRows
-       then Left "Error: No rows match the specified condition."
-       else Right $ DataFrame cols filteredRows
+deleteRowsFromDataFrame :: DataFrame -> WhereClause -> Either String DataFrame
+deleteRowsFromDataFrame (DataFrame cols rows) wc =
+    let nonMatchingRows = filter (not . rowSatisfiesWhereClause wc cols) rows
+    in if length nonMatchingRows == length rows
+       then Left "Error: No rows deleted. None match the specified condition."
+       else Right $ DataFrame cols nonMatchingRows
 
 rowSatisfiesWhereClause :: WhereClause -> [Column] -> Row -> Bool
 rowSatisfiesWhereClause (IsValueBool b _ columnName) cols row =
@@ -1333,6 +1313,31 @@ removeAtIndex index list
 
 -- End of Insert 
 -- ========================================================================
+
+updateRowsInTable :: TableName -> SelectedColumns -> Row -> Maybe WhereClause -> DataFrame -> Either ErrorMessage DataFrame
+updateRowsInTable tableName columns newRow maybeWhereClause (DataFrame dfColumns dfRows) =
+    Right $ DataFrame dfColumns (map updateRowIfRequired dfRows)
+  where
+    updateRowIfRequired row =
+        case maybeWhereClause of
+            Just whereClause ->
+                if rowSatisfiesWhereClause whereClause dfColumns row
+                then updateRowValues dfColumns columns newRow row
+                else row
+            Nothing -> updateRowValues dfColumns columns newRow row
+
+updateRowValues :: [Column] -> SelectedColumns -> Row -> Row -> Row
+updateRowValues columns selectCols newRow row = 
+    map updateValue (zip [0..] row)
+  where
+    colNames = map extractColumnName selectCols
+    colIndices = mapMaybe (`findColumnIndex` columns) colNames
+    newValueMap = zip colIndices newRow
+
+    updateValue (idx, value) = 
+        case lookup idx newValueMap of
+            Just newValue -> newValue
+            Nothing -> value
 
 extractColumnNames :: SelectedColumns -> [ColumnName]
 extractColumnNames = mapMaybe extractName
