@@ -100,7 +100,7 @@ runExecuteIO (Free step) = do
             Lib3.InsertStatement tableName _ _ -> return $ next tableName
             Lib3.UpdateStatement tableName _ _ _ -> return $ next tableName
             Lib3.ShowTableStatement tableName -> return $ next tableName
-            _ -> error "No table name for non-select statement"
+            _ -> error "No table name for non-select statement"  
     runStep (Lib3.GetTableNames parsedStatement next) = return $ next $ getTableNames parsedStatement
       where
         getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
@@ -111,7 +111,7 @@ runExecuteIO (Free step) = do
         getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
         getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
         getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
-        getTableNames Lib3.ShowTablesStatement = ["employees", "employees1"]
+        getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
         getTableNames (Lib3.Invalid _) = []
         getTableNames _ = [] 
     
