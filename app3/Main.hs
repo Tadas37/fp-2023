@@ -111,7 +111,6 @@ runExecuteIO (Free step) = do
         getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
         getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
         getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
-        
         getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
         getTableNames (Lib3.Invalid _) = []
         getTableNames _ = [] 
