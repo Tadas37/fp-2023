@@ -152,46 +152,48 @@ runExecuteIO (Free step) = do
       let isValid = Lib3.validateStatement parsedStatement tables
       return $ next isValid
 
-
-    runStep (Lib3.UpdateRows parsedStatement tables next) = do
-      let updatedTable = updateTable parsedStatement tables
-      case updatedTable of
-          Just tbl -> return $ next tbl
-          Nothing -> error "Table not found for updating rows"
-      where
-        updateTable :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> Maybe (Lib3.TableName, DataFrame)
-        updateTable stmt tbls =
-            case stmt of
-                Lib3.UpdateStatement tableName _ _ _ -> do
-                    df <- lookup tableName tbls
-                    return (tableName, Lib3.updateRowsInTable stmt df)
-                _ -> Nothing
-          
-
     runStep (Lib3.ParseSql statement next) = 
       case Lib3.parseStatement statement of
         Right parsedStatement -> return $ next parsedStatement
         Left error -> return $ next $ Lib3.Invalid error
 
-    runStep (Lib3.DeleteRows parsedStatement tables next) = 
-      case parsedStatement of
-          Lib3.DeleteStatement tableName whereClause ->
-              case lookup tableName tables of
-                  Just df -> do
-                      let updatedDf = Lib3.filterRows df whereClause
-                      case updatedDf of
-                          Right dfFiltered -> 
-                              runStep (Lib3.UpdateTable (tableName, dfFiltered) (next (tableName, dfFiltered)))
-                          Left errMsg -> error errMsg
-                  Nothing -> error $ "Table not found: " ++ tableName
-          Lib3.SelectAll _ _ -> error "SelectAll not valid for DeleteRows"
-          Lib3.SelectAggregate _ _ _ -> error "SelectAggregate not valid for DeleteRows"
-          Lib3.SelectColumns _ _ _ -> error "SelectColumns not valid for DeleteRows"
-          Lib3.InsertStatement _ _ _ -> error "InsertStatement not valid for DeleteRows"
-          Lib3.UpdateStatement _ _ _ _ -> error "UpdateStatement not valid for DeleteRows"
-          Lib3.ShowTableStatement _ -> error "ShowTableStatement not valid for DeleteRows"
-          Lib3.ShowTablesStatement -> error "ShowTablesStatement not valid for DeleteRows"
-          Lib3.Invalid _ -> error "Invalid statement cannot be processed in DeleteRows"
+    runStep (Lib3.UpdateRows parsedStatement tables next) =
+        case parsedStatement of
+            Lib3.UpdateStatement tableName columns row maybeWhereClause ->
+                case lookup tableName tables of
+                    Just df -> do
+                        let updatedDf = Lib3.updateRowsInTable tableName columns row maybeWhereClause df
+                        case updatedDf of
+                            Right dfUpdated -> return (next (tableName, dfUpdated))
+                            Left errMsg -> error errMsg
+                    Nothing -> error $ "Table not found: " ++ tableName
+            Lib3.DeleteStatement _ _ -> error "DeleteStatement not valid for UpdateRows"
+            Lib3.SelectAll _ _ -> error "SelectAll not valid for UpdateRows"
+            Lib3.SelectAggregate _ _ _ -> error "SelectAggregate not valid for UpdateRows"
+            Lib3.SelectColumns _ _ _ -> error "SelectColumns not valid for UpdateRows"
+            Lib3.InsertStatement _ _ _ -> error "InsertStatement not valid for UpdateRows"
+            Lib3.ShowTableStatement _ -> error "ShowTableStatement not valid for UpdateRows"
+            Lib3.ShowTablesStatement -> error "ShowTablesStatement not valid for UpdateRows"
+            Lib3.Invalid _ -> error "Invalid statement cannot be processed in UpdateRows"
+
+    runStep (Lib3.DeleteRows parsedStatement tables next) =
+        case parsedStatement of
+            Lib3.DeleteStatement tableName whereClause ->
+                case lookup tableName tables of
+                    Just df -> do
+                        let updatedDf = Lib3.filterRows df whereClause
+                        case updatedDf of
+                            Right dfFiltered -> return (next (tableName, dfFiltered))
+                            Left errMsg -> error errMsg
+                    Nothing -> error $ "Table not found: " ++ tableName
+            Lib3.SelectAll _ _ -> error "SelectAll not valid for DeleteRows"
+            Lib3.SelectAggregate _ _ _ -> error "SelectAggregate not valid for DeleteRows"
+            Lib3.SelectColumns _ _ _ -> error "SelectColumns not valid for DeleteRows"
+            Lib3.InsertStatement _ _ _ -> error "InsertStatement not valid for DeleteRows"
+            Lib3.UpdateStatement _ _ _ _ -> error "UpdateStatement not valid for DeleteRows"
+            Lib3.ShowTableStatement _ -> error "ShowTableStatement not valid for DeleteRows"
+            Lib3.ShowTablesStatement -> error "ShowTablesStatement not valid for DeleteRows"
+            Lib3.Invalid _ -> error "Invalid statement cannot be processed in DeleteRows"
   
     runStep (Lib3.InsertRows parsedStatement tables next) =
         case parsedStatement of
