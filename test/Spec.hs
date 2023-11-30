@@ -4,7 +4,7 @@ import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..))
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
-import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumnsFunction, ParsedStatement(..), TableName, SelectColumn(..))
+import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumns, ParsedStatement(..), TableName, SelectColumn(..))
 import Test.Hspec
 
 columnName :: Column -> String
@@ -270,23 +270,23 @@ main = hspec $ do
   describe "getSelectedColumnsFunction" $ do
     it "selects all columns for SelectAll statement" $ do
       let stmt = Lib3.SelectAll ["employees"] Nothing
-      let selectedColumns = getSelectedColumnsFunction stmt sampleDatabase
+      let selectedColumns = getSelectedColumns stmt sampleDatabase
       length selectedColumns `shouldBe` 2
 
     it "selects specified columns for SelectColumns statement" $ do
       let stmt = Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "id"] Nothing
-      let selectedColumns = getSelectedColumnsFunction stmt sampleDatabase
+      let selectedColumns = getSelectedColumns stmt sampleDatabase
       length selectedColumns `shouldBe` 1
       (columnName . head) selectedColumns `shouldBe` "id"
 
     it "returns empty list for non-existent table" $ do
       let stmt = Lib3.SelectAll ["nonexistent"] Nothing
-      let selectedColumns = getSelectedColumnsFunction stmt sampleDatabase
+      let selectedColumns = getSelectedColumns stmt sampleDatabase
       selectedColumns `shouldBe` []
 
     it "returns empty list for non-existent columns" $ do
       let stmt = Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "nonexistent"] Nothing
-      let selectedColumns = getSelectedColumnsFunction stmt sampleDatabase
+      let selectedColumns = getSelectedColumns stmt sampleDatabase
       selectedColumns `shouldBe` []
 
 

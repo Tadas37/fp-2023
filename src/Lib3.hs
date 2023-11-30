@@ -32,6 +32,7 @@ module Lib3
     WhereClause(..),
     Condition(..),
     ConditionValue(..),
+    getSelectedColumns,
   )
 where
 
@@ -1292,7 +1293,7 @@ deleteRowsFromDataFrame (DataFrame cols rows) wc =
     in if length nonMatchingRows == length rows
        then Left "Error: No rows deleted. None match the specified condition."
        else Right $ DataFrame cols nonMatchingRows
-       
+
 whereClauseHasValidColumns :: WhereClause -> [Column] -> Bool
 whereClauseHasValidColumns (IsValueBool _ _ columnName) cols = isJust (findColumnIndex columnName cols)
 whereClauseHasValidColumns (Conditions conditions) cols = Data.List.all (`conditionHasValidColumn` cols) conditions
