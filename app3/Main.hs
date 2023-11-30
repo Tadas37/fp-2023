@@ -84,42 +84,13 @@ runExecuteIO (Free step) = do
           return $ next $ Right fileContents
         else
           return $ next $ Left "One or more provided tables does not exist"
-
-
-    runStep (Lib3.GetTableNames parsedStatement next) = return $ next $ getTableNames parsedStatement
-      where
-        getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
-        getTableNames (Lib3.SelectAll tableNames _) = tableNames
-        getTableNames (Lib3.SelectAggregate tableNames _ _) = tableNames
-        getTableNames (Lib3.SelectColumns tableNames _ _) = tableNames
-        getTableNames (Lib3.DeleteStatement tableName _) = [tableName]
-        getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
-        getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
-        getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
-        getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
-        getTableNames (Lib3.Invalid _) = []
-        getTableNames _ = [] 
-    
     runStep (Lib3.UpdateTable (tableName, df) next) = do
         let serializedTable = Lib3.dataFrameToSerializedTable (tableName, df)
         let yamlContent = Lib3.serializeTableToYAML serializedTable
         writeFile (getTableFilePath tableName) yamlContent
         return next
-    runStep (Lib3.GenerateDataFrame columns rows next) =
-        return $ next (DataFrame columns rows)
-    runStep (Lib3.GetReturnTableRows parsedStatement tables timeStamp next) = do
-      let rows = case parsedStatement of
-            Lib3.SelectAll _ _ -> extractAllRows tables
-            Lib3.SelectColumns tableNames conditions _ -> Lib3.extractSelectedColumnsRows tableNames conditions tables
-            Lib3.SelectAggregate tableNames aggFunc conditions -> Lib3.extractAggregateRows tableNames aggFunc conditions tables
-            _ -> error "Unhandled statement type in GetReturnTableRows"
-      return $ next rows
-      where
-        extractAllRows :: [(Lib3.TableName, DataFrame)] -> [Row]
-        extractAllRows tbls = concatMap (dfRows . snd) tbls
-  
-        dfRows :: DataFrame -> [Row]
-        dfRows (DataFrame _ rows) = rows
+
+
   
     runStep (Lib3.ShowTablesFunction tables next) = do
       let column = Column "tableName" StringType

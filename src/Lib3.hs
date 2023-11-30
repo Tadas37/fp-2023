@@ -157,13 +157,10 @@ data ExecutionAlgebra next
   | GetTime (UTCTime -> next)
   | ParseSql SQLQuery (ParsedStatement -> next)
   | IsParsedStatementValid ParsedStatement [(TableName, DataFrame)] ((Bool, ErrorMessage) -> next)
-  | GetTableNames ParsedStatement ([TableName] -> next)
   | DeleteRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | InsertRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | UpdateRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | GetSelectedColumns ParsedStatement [(TableName, DataFrame)] ([Column] -> next)
-  | GetReturnTableRows ParsedStatement [(TableName, DataFrame)] UTCTime ([Row] -> next)
-  | GenerateDataFrame [Column] [Row] (DataFrame -> next)
   | ShowTablesFunction [TableName] (DataFrame -> next)
   | ShowTableFunction DataFrame (DataFrame -> next)
   deriving Functor
@@ -201,8 +198,17 @@ parseSql query = liftF $ ParseSql query id
 isParsedStatementValid :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Bool, ErrorMessage)
 isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables id
 
-getTableNames :: ParsedStatement -> Execution [TableName]
-getTableNames statement = liftF $ GetTableNames statement id
+getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
+getTableNames (Lib3.SelectAll tableNames _) = tableNames
+getTableNames (Lib3.SelectAggregate tableNames _ _) = tableNames
+getTableNames (Lib3.SelectColumns tableNames _ _) = tableNames
+getTableNames (Lib3.DeleteStatement tableName _) = [tableName]
+getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
+getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
+getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
+getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
+getTableNames (Lib3.Invalid _) = []
+getTableNames _ = [] 
 
 deleteRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
 deleteRows statement tables = liftF $ DeleteRows statement tables id
@@ -216,11 +222,23 @@ updateRows statement tables = liftF $ UpdateRows statement tables id
 getSelectedColumns :: ParsedStatement -> [(TableName, DataFrame)] -> Execution [Column]
 getSelectedColumns statement tables = liftF $ GetSelectedColumns statement tables id
 
-getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> Execution [Row]
-getReturnTableRows parsedStatement usedTables time = liftF $ GetReturnTableRows parsedStatement usedTables time id
+getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> [Row]
+getReturnTableRows parsedStatement tables timeStamp = 
+    case parsedStatement of
+        SelectAll _ _ -> extractAllRows tables
+        SelectColumns tableNames conditions _ -> Lib3.extractSelectedColumnsRows tableNames conditions tables
+        SelectAggregate tableNames aggFunc conditions -> Lib3.extractAggregateRows tableNames aggFunc conditions tables
+        _ -> error "Unhandled statement type in getReturnTableRows"
+    where
+        extractAllRows :: [(TableName, DataFrame)] -> [Row]
+        extractAllRows tbls = concatMap (dfRows . snd) tbls
 
-generateDataFrame :: [Column] -> [Row] -> Execution DataFrame
-generateDataFrame columns rows = liftF $ GenerateDataFrame columns rows id
+        dfRows :: DataFrame -> [Row]
+        dfRows (DataFrame _ rows) = rows
+
+
+generateDataFrame :: [Column] -> [Row] -> DataFrame
+generateDataFrame columns rows = DataFrame columns rows
 
 showTablesFunction :: [TableName] -> Execution DataFrame
 showTablesFunction tables = liftF $ ShowTablesFunction tables id
@@ -232,7 +250,7 @@ showTableFunction table = liftF $ ShowTableFunction table id
 executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
 executeSql statement = do
   parsedStatement <- parseSql statement
-  tableNames <- getTableNames parsedStatement
+  let tableNames = getTableNames parsedStatement
   tableFiles <- loadFiles tableNames
   case tableFiles of
     Left err -> return $ Left err
@@ -249,8 +267,8 @@ executeSql statement = do
             case statementType of
               Select -> do
                 columns     <- getSelectedColumns parsedStatement tables
-                rows        <- getReturnTableRows parsedStatement tables timeStamp
-                df          <- generateDataFrame columns rows
+                let rows = getReturnTableRows parsedStatement tables timeStamp
+                let df = generateDataFrame columns rows
                 return $ Right df
               Delete -> do
                 (name, df)  <- deleteRows parsedStatement tables
