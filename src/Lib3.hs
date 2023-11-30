@@ -202,26 +202,22 @@ getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
 getTableNames (Lib3.Invalid _) = []
 getTableNames _ = [] 
 
-
-deleteRows :: ParsedStatement -> [(TableName, DataFrame)] -> (TableName, DataFrame)
-deleteRows (DeleteStatement tableName maybeWhereClause) tables =
+deleteRows :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> Either ErrorMessage (Lib3.TableName, DataFrame)
+deleteRows (Lib3.DeleteStatement tableName whereClause) tables =
     case lookup tableName tables of
-        Just df ->
-            case maybeWhereClause of
-                Just whereClause ->
-                    case Lib3.filterRows df maybeWhereClause of
-                        Right dfFiltered -> (tableName, dfFiltered)
-                        Left errMsg -> error errMsg
-                Nothing -> (tableName, df) 
-        Nothing -> error $ "Table not found: " ++ tableName
-deleteRows (SelectAll _ _) _ = error "SelectAll not valid for DeleteRows"
-deleteRows (SelectAggregate _ _ _) _ = error "SelectAggregate not valid for DeleteRows"
-deleteRows (SelectColumns _ _ _) _ = error "SelectColumns not valid for DeleteRows"
-deleteRows (InsertStatement _ _ _) _ = error "InsertStatement not valid for DeleteRows"
-deleteRows (UpdateStatement _ _ _ _) _ = error "UpdateStatement not valid for DeleteRows"
-deleteRows (ShowTableStatement _) _ = error "ShowTableStatement not valid for DeleteRows"
-deleteRows ShowTablesStatement _ = error "ShowTablesStatement not valid for DeleteRows"
-deleteRows (Invalid _) _ = error "Invalid statement cannot be processed in DeleteRows"
+        Just df -> 
+            case Lib3.filterRows df whereClause of
+                Right dfFiltered -> Right (tableName, dfFiltered)
+                Left errMsg -> Left errMsg
+        Nothing -> Left $ "Table not found: " ++ tableName
+deleteRows (Lib3.SelectAll _ _) _ = Left "SelectAll not valid for DeleteRows"
+deleteRows (Lib3.SelectAggregate _ _ _) _ = Left "SelectAggregate not valid for DeleteRows"
+deleteRows (Lib3.SelectColumns _ _ _) _ = Left "SelectColumns not valid for DeleteRows"
+deleteRows (Lib3.InsertStatement _ _ _) _ = Left "InsertStatement not valid for DeleteRows"
+deleteRows (Lib3.UpdateStatement _ _ _ _) _ = Left "UpdateStatement not valid for DeleteRows"
+deleteRows (Lib3.ShowTableStatement _) _ = Left "ShowTableStatement not valid for DeleteRows"
+deleteRows Lib3.ShowTablesStatement _ = Left "ShowTablesStatement not valid for DeleteRows"
+deleteRows (Lib3.Invalid _) _ = Left "Invalid statement cannot be processed in DeleteRows"
 
 insertRows :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> (Lib3.TableName, DataFrame)
 insertRows (Lib3.InsertStatement tableName maybeSelectedColumns row) tables =
@@ -247,29 +243,24 @@ insertRows (Lib3.ShowTableStatement _) _ = error "ShowTableStatement not valid f
 insertRows Lib3.ShowTablesStatement _ = error "ShowTablesStatement not valid for InsertRows"
 insertRows (Lib3.Invalid _) _ = error "Invalid statement cannot be processed in InsertRows"
 
-updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Maybe (TableName, DataFrame)
-updateRows (UpdateStatement tableName selectedColumns newRow maybeWhereClause) tables =
+updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Either ErrorMessage (TableName, DataFrame)
+updateRows (UpdateStatement tableName columns row maybeWhereClause) tables =
     case lookup tableName tables of
-        Just df -> Just (tableName, updateRowsInTable df newRow maybeWhereClause)
-        Nothing -> Nothing
-    where
-        updateRowsInTable :: DataFrame -> Row -> Maybe WhereClause -> DataFrame
-        updateRowsInTable (DataFrame columns rows) newRow whereClause =
-            let updatedRows = map (updateRowIfMatches newRow whereClause) rows
-            in DataFrame columns updatedRows
+        Just df -> 
+            let updatedDf = updateRowsInTable tableName columns row maybeWhereClause df
+            in case updatedDf of
+                Right dfUpdated -> Right (tableName, dfUpdated)
+                Left errMsg -> Left errMsg
+        Nothing -> Left $ "Table not found: " ++ tableName
+updateRows (SelectAll _ _) _ = Left "SelectAll not valid for UpdateRows"
+updateRows (SelectAggregate _ _ _) _ = Left "SelectAggregate not valid for UpdateRows"
+updateRows (SelectColumns _ _ _) _ = Left "SelectColumns not valid for UpdateRows"
+updateRows (DeleteStatement _ _) _ = Left "DeleteStatement not valid for UpdateRows"
+updateRows (ShowTableStatement _) _ = Left "ShowTableStatement not valid for UpdateRows"
+updateRows ShowTablesStatement _ = Left "ShowTablesStatement not valid for UpdateRows"
+updateRows (InsertStatement _ _ _) _ = Left "InsertStatement not valid for UpdateRows"
+updateRows (Invalid _) _ = Left "Invalid statement cannot be processed in UpdateRows"
 
-        updateRowIfMatches :: Row -> Maybe WhereClause -> Row -> Row
-        updateRowIfMatches newRow Nothing _ = newRow
-        updateRowIfMatches newRow (Just whereClause) row =
-            if rowMatchesWhereClause row whereClause
-            then newRow
-            else row
-
-        rowMatchesWhereClause :: Row -> WhereClause -> Bool
-        -- Implementation for matching a row with a where clause
-        rowMatchesWhereClause _ _ = False -- Placeholder, implement based on your WhereClause definition
-
-updateRows _ _ = Nothing
 
 
 getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> [Row]
@@ -330,9 +321,12 @@ executeSql statement =
                         let df = generateDataFrame columns rows
                         return $ Right df
                       Delete -> do
-                        let (name, df) = deleteRows parsedStatement tables
-                        updateTable (name, df)
-                        return $ Right df
+                        let deleteRow = deleteRows parsedStatement tables
+                        case deleteRow of
+                            Right (name, df) -> do
+                              updateTable (name, df)
+                              return $ Right df
+                            Left errMsg -> return $ Left errMsg
                       Insert -> do
                         let (name, df) = insertRows parsedStatement tables
                         updateTable (name, df)
@@ -340,10 +334,10 @@ executeSql statement =
                       Update -> do
                         let updatedTable = updateRows parsedStatement tables
                         case updatedTable of
-                            Just (name, df) -> do
+                            Right (name, df) -> do
                                 updateTable (name, df)
                                 return $ Right df
-                            Nothing -> return $ Left "Table not found for updating rows"
+                            Left errMsg -> return $ Left errMsg
                       ShowTables -> do
                         let allTables = showTablesFunction tableNames
                         return $ Right allTables
@@ -362,26 +356,6 @@ executeShowTable parsedStatement tables = do
 getNonSelectTableNameFromStatement :: ParsedStatement -> TableName
 getNonSelectTableNameFromStatement (ShowTableStatement tableName) = tableName
 getNonSelectTableNameFromStatement _ = error "Non-select statement expected"
-
-
-updateRowsInTable :: ParsedStatement -> DataFrame -> DataFrame
-updateRowsInTable (UpdateStatement _ _ newRow maybeWhereClause) (DataFrame columns rows) =
-   DataFrame columns (Data.List.map (updateRowIfMatches newRow maybeWhereClause) rows)
-updateRowsInTable _ df = df
-
-updateRowIfMatches :: Row -> Maybe WhereClause -> Row -> Row
-updateRowIfMatches newRow (Just whereClause) row =
-    if rowMatchesWhereClause row whereClause
-    then newRow
-    else row
-updateRowIfMatches newRow Nothing _ = newRow
-
-rowMatchesWhereClause :: Row -> WhereClause -> Bool
-rowMatchesWhereClause _ (IsValueBool {}) = False
-rowMatchesWhereClause row (Conditions conditions) = Data.List.all (rowMatchesCondition row) conditions
-
-rowMatchesCondition :: Row -> Condition -> Bool
-rowMatchesCondition _ (Equals (TableColumn _ _) (IntValue _)) = False
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content =
@@ -1308,10 +1282,17 @@ wordToLowerSensitive word
 filterRows :: DataFrame -> Maybe WhereClause -> Either String DataFrame
 filterRows df@(DataFrame cols _) (Just wc) =
     if whereClauseHasValidColumns wc cols
-    then filterDataFrame df wc
+    then deleteRowsFromDataFrame df wc
     else Left "Error: Specified column in WhereClause does not exist."
 filterRows (DataFrame cols _) Nothing = Right $ DataFrame cols []
 
+deleteRowsFromDataFrame :: DataFrame -> WhereClause -> Either String DataFrame
+deleteRowsFromDataFrame (DataFrame cols rows) wc =
+    let nonMatchingRows = filter (not . rowSatisfiesWhereClause wc cols) rows
+    in if length nonMatchingRows == length rows
+       then Left "Error: No rows deleted. None match the specified condition."
+       else Right $ DataFrame cols nonMatchingRows
+       
 whereClauseHasValidColumns :: WhereClause -> [Column] -> Bool
 whereClauseHasValidColumns (IsValueBool _ _ columnName) cols = isJust (findColumnIndex columnName cols)
 whereClauseHasValidColumns (Conditions conditions) cols = Data.List.all (`conditionHasValidColumn` cols) conditions
@@ -1421,6 +1402,34 @@ removeAtIndex index list
 
 -- End of Insert 
 -- ========================================================================
+--Start of Update
+updateRowsInTable :: TableName -> SelectedColumns -> Row -> Maybe WhereClause -> DataFrame -> Either ErrorMessage DataFrame
+updateRowsInTable tableName columns newRow maybeWhereClause (DataFrame dfColumns dfRows) =
+    Right $ DataFrame dfColumns (map updateRowIfRequired dfRows)
+  where
+    updateRowIfRequired row =
+        case maybeWhereClause of
+            Just whereClause ->
+                if rowSatisfiesWhereClause whereClause dfColumns row
+                then updateRowValues dfColumns columns newRow row
+                else row
+            Nothing -> updateRowValues dfColumns columns newRow row
+
+updateRowValues :: [Column] -> SelectedColumns -> Row -> Row -> Row
+updateRowValues columns selectCols newRow row = 
+    map updateValue (zip [0..] row)
+  where
+    colNames = map extractColumnName selectCols
+    colIndices = mapMaybe (`findColumnIndex` columns) colNames
+    newValueMap = zip colIndices newRow
+
+    updateValue (idx, value) = 
+        case lookup idx newValueMap of
+            Just newValue -> newValue
+            Nothing -> value
+
+-- ========================================================================
+-- End of Update
 
 extractColumnNames :: SelectedColumns -> [ColumnName]
 extractColumnNames = mapMaybe extractName
