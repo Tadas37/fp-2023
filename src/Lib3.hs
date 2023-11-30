@@ -155,7 +155,6 @@ data ExecutionAlgebra next
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
   | ParseSql SQLQuery (ParsedStatement -> next)
-  | IsParsedStatementValid ParsedStatement [(TableName, DataFrame)] ((Bool, ErrorMessage) -> next)
   | DeleteRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | InsertRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
   | UpdateRows ParsedStatement [(TableName, DataFrame)] ((TableName, DataFrame) -> next)
@@ -192,9 +191,6 @@ getTime = liftF $ GetTime id
 parseSql :: SQLQuery -> Execution ParsedStatement
 parseSql query = liftF $ ParseSql query id
 
-isParsedStatementValid :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Bool, ErrorMessage)
-isParsedStatementValid statement tables = liftF $ IsParsedStatementValid statement tables id
-
 getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
 getTableNames (Lib3.SelectAll tableNames _) = tableNames
 getTableNames (Lib3.SelectAggregate tableNames _ _) = tableNames
@@ -213,8 +209,29 @@ deleteRows statement tables = liftF $ DeleteRows statement tables id
 insertRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
 insertRows statement tables = liftF $ InsertRows statement tables id
 
-updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (TableName, DataFrame)
-updateRows statement tables = liftF $ UpdateRows statement tables id
+updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Maybe (TableName, DataFrame)
+updateRows (UpdateStatement tableName selectedColumns newRow maybeWhereClause) tables =
+    case lookup tableName tables of
+        Just df -> Just (tableName, updateRowsInTable df newRow maybeWhereClause)
+        Nothing -> Nothing
+    where
+        updateRowsInTable :: DataFrame -> Row -> Maybe WhereClause -> DataFrame
+        updateRowsInTable (DataFrame columns rows) newRow whereClause =
+            let updatedRows = map (updateRowIfMatches newRow whereClause) rows
+            in DataFrame columns updatedRows
+
+        updateRowIfMatches :: Row -> Maybe WhereClause -> Row -> Row
+        updateRowIfMatches newRow Nothing _ = newRow
+        updateRowIfMatches newRow (Just whereClause) row =
+            if rowMatchesWhereClause row whereClause
+            then newRow
+            else row
+
+        rowMatchesWhereClause :: Row -> WhereClause -> Bool
+        -- Implementation for matching a row with a where clause
+        rowMatchesWhereClause _ _ = False -- Placeholder, implement based on your WhereClause definition
+
+updateRows _ _ = Nothing
 
 
 getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> [Row]
@@ -262,7 +279,7 @@ executeSql statement = do
         Right tables -> do
           let statementType = getStatementType statement
           timeStamp     <- getTime
-          (isValid, errorMessage) <- isParsedStatementValid parsedStatement tables
+          let (isValid, errorMessage) = validateStatement parsedStatement tables
           if not isValid
             then return $ Left errorMessage
             else
@@ -281,15 +298,18 @@ executeSql statement = do
                 updateTable (name, df)
                 return $ Right df
               Update -> do
-                (name, df)  <- updateRows parsedStatement tables
-                updateTable (name, df)
-                return $ Right df
+                let updatedTable = updateRows parsedStatement tables
+                case updatedTable of
+                    Just (name, df) -> do
+                        updateTable (name, df)
+                        return $ Right df
+                    Nothing -> return $ Left "Table not found for updating rows"
               ShowTables -> do
                 let allTables = showTablesFunction tableNames
                 return $ Right allTables
               ShowTable -> executeShowTable parsedStatement tables
               InvalidStatement -> return $ Left "Invalid statement"
-         
+        
 executeShowTable :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Either ErrorMessage DataFrame)
 executeShowTable parsedStatement tables = do
   let nonSelectTableName = getNonSelectTableNameFromStatement parsedStatement

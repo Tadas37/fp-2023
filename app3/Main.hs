@@ -91,25 +91,7 @@ runExecuteIO (Free step) = do
         return next
 
 
-    runStep (Lib3.IsParsedStatementValid parsedStatement tables next) = do
-      let isValid = Lib3.validateStatement parsedStatement tables
-      return $ next isValid
 
-
-    runStep (Lib3.UpdateRows parsedStatement tables next) = do
-      let updatedTable = updateTable parsedStatement tables
-      case updatedTable of
-          Just tbl -> return $ next tbl
-          Nothing -> error "Table not found for updating rows"
-      where
-        updateTable :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> Maybe (Lib3.TableName, DataFrame)
-        updateTable stmt tbls =
-            case stmt of
-                Lib3.UpdateStatement tableName _ _ _ -> do
-                    df <- lookup tableName tbls
-                    return (tableName, Lib3.updateRowsInTable stmt df)
-                _ -> Nothing
-          
 
     runStep (Lib3.ParseSql statement next) = 
       case Lib3.parseStatement statement of
