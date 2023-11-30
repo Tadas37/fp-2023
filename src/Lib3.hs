@@ -33,7 +33,6 @@ module Lib3
     WhereClause(..),
     Condition(..),
     ConditionValue(..),
-    getStatementType1,
   )
 where
 
@@ -156,7 +155,6 @@ data ExecutionAlgebra next
   = LoadFiles [TableName] (Either ErrorMessage [FileContent] -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
-  | GetStatementType SQLQuery (StatementType -> next)
   | ParseSql SQLQuery (ParsedStatement -> next)
   | IsParsedStatementValid ParsedStatement [(TableName, DataFrame)] ((Bool, ErrorMessage) -> next)
   | GetTableNames ParsedStatement ([TableName] -> next)
@@ -168,7 +166,6 @@ data ExecutionAlgebra next
   | GenerateDataFrame [Column] [Row] (DataFrame -> next)
   | ShowTablesFunction [TableName] (DataFrame -> next)
   | ShowTableFunction DataFrame (DataFrame -> next)
-  | GetNotSelectTableName ParsedStatement (TableName -> next)
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
@@ -197,9 +194,6 @@ updateTable table = liftF $ UpdateTable table ()
 
 getTime :: Execution UTCTime
 getTime = liftF $ GetTime id
-
-getStatementType :: SQLQuery -> Execution StatementType
-getStatementType query = liftF $ GetStatementType query id
 
 parseSql :: SQLQuery -> Execution ParsedStatement
 parseSql query = liftF $ ParseSql query id
@@ -234,8 +228,6 @@ showTablesFunction tables = liftF $ ShowTablesFunction tables id
 showTableFunction :: DataFrame -> Execution DataFrame
 showTableFunction table = liftF $ ShowTableFunction table id
 
-getNonSelectTableName :: ParsedStatement -> Execution TableName
-getNonSelectTableName statement = liftF $ GetNotSelectTableName statement id
 
 executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
 executeSql statement = do
@@ -248,7 +240,7 @@ executeSql statement = do
       case parseTables content of
         Left parseErr -> return $ Left parseErr
         Right tables -> do
-          statementType <- getStatementType statement
+          let statementType = getStatementType statement
           timeStamp     <- getTime
           (isValid, errorMessage) <- isParsedStatementValid parsedStatement tables
           if not isValid
@@ -333,8 +325,8 @@ convertColumnType dt = case dt of
 convertRows :: [[Y.Value]] -> [Row]
 convertRows = Data.List.map (Data.List.map convertValue)
 
-getStatementType1 :: String -> StatementType
-getStatementType1 query 
+getStatementType :: String -> StatementType
+getStatementType query 
     | "select" `isPrefixOf` lowerQuery = if "show" `isPrefixOf` lowerQuery then ShowTable else Select
     | "insert" `isPrefixOf` lowerQuery = Insert
     | "update" `isPrefixOf` lowerQuery = Update

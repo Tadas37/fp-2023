@@ -85,13 +85,7 @@ runExecuteIO (Free step) = do
         else
           return $ next $ Left "One or more provided tables does not exist"
 
-    runStep (Lib3.GetNotSelectTableName statement next) =
-        case statement of
-            Lib3.DeleteStatement tableName _ -> return $ next tableName
-            Lib3.InsertStatement tableName _ _ -> return $ next tableName
-            Lib3.UpdateStatement tableName _ _ _ -> return $ next tableName
-            Lib3.ShowTableStatement tableName -> return $ next tableName
-            _ -> error "No table name for non-select statement"  
+
     runStep (Lib3.GetTableNames parsedStatement next) = return $ next $ getTableNames parsedStatement
       where
         getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
@@ -205,9 +199,7 @@ runExecuteIO (Free step) = do
             Lib3.ShowTableStatement _ -> error "ShowTableStatement not valid for InsertRows"
             Lib3.ShowTablesStatement -> error "ShowTablesStatement not valid for InsertRows"
             Lib3.Invalid _ -> error "Invalid statement cannot be processed in InsertRows"
-    runStep (Lib3.GetStatementType sqlQuery next) = do
-      let stmtType = Lib3.getStatementType1 sqlQuery
-      return $ next stmtType
+
 
 columnName :: DataFrame.Column -> String
 columnName (DataFrame.Column name _) = name 
