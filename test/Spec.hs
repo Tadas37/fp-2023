@@ -538,5 +538,39 @@ main = hspec $ do
         Right _ -> expectationFailure "Expected an error but deletion succeeded."
         Left errMsg -> errMsg `shouldBe` "Error: No rows deleted. None match the specified condition."
 
+  describe "updateRows" $ do
+    -- Setup sample DataFrame and tables
+    let sampleDataFrame = DataFrame 
+          [ Column "id" IntegerType
+          , Column "name" StringType
+          , Column "age" IntegerType
+          ]
+          [ [IntegerValue 1, StringValue "Alice", IntegerValue 30]
+          , [IntegerValue 2, StringValue "Bob", IntegerValue 25]
+          ]
+    let sampleTable = ("employees", sampleDataFrame)
+    let sampleTables = [sampleTable]
+
+    it "successfully updates rows in the table" $ do
+      let updateStmt = Lib3.UpdateStatement "employees" [Lib3.TableColumn "employees" "age"] [IntegerValue 35] (Just (Lib3.Conditions [Lib3.Equals (Lib3.TableColumn "employees" "id") (Lib3.IntValue 1)]))
+      case Lib3.updateRows updateStmt sampleTables of
+        Right (_, updatedDataFrame) -> do
+          let updatedRow = head (extractRows updatedDataFrame)
+          (updatedRow !! 2) `shouldBe` IntegerValue 35
+        Left errMsg -> expectationFailure $ "Update failed: " ++ errMsg
+
+    it "fails to update rows in a non-existent table" $ do
+      let updateStmt = Lib3.UpdateStatement "nonexistent" [Lib3.TableColumn "nonexistent" "age"] [IntegerValue 35] Nothing
+      Lib3.updateRows updateStmt sampleTables `shouldSatisfy` isLeft
+
+    it "does not update any rows if the condition does not match" $ do
+      let updateStmt = Lib3.UpdateStatement "employees" [Lib3.TableColumn "employees" "age"] [IntegerValue 35] (Just (Lib3.Conditions [Lib3.Equals (Lib3.TableColumn "employees" "id") (Lib3.IntValue 3)]))
+      case Lib3.updateRows updateStmt sampleTables of
+        Right (_, updatedDataFrame) -> do
+          let originalRow = head (extractRows sampleDataFrame)
+          let updatedRow = head (extractRows updatedDataFrame)
+          updatedRow `shouldBe` originalRow
+        Left errMsg -> expectationFailure $ "Update failed: " ++ errMsg
+
 extractRows :: DataFrame -> [Row]
 extractRows (DataFrame _ rows) = rows

@@ -5,6 +5,7 @@ module Lib3
   ( executeSql,
     insertRows,
     deleteRows,
+    updateRows,
     parseTables,
     Execution,
     ExecutionAlgebra(..),
