@@ -570,19 +570,25 @@ getSelectedColumns :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [
 getSelectedColumns stmt tbls = case stmt of
     Lib3.SelectAll tableNames _ -> Data.List.concatMap (getTableColumns tbls) tableNames
     Lib3.SelectColumns _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
+    Lib3.SelectAggregate _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
     _ -> []
 
-getTableColumns :: [(TableName, DataFrame)] -> TableName -> [Column]
+getTableColumns :: [(Lib3.TableName, DataFrame)] -> Lib3.TableName -> [Column]
 getTableColumns tbls tableName = case Data.List.lookup tableName tbls of
     Just (DataFrame columns _) -> columns
     Nothing -> []
 
-findColumn :: [(TableName, DataFrame)] -> SelectColumn -> Maybe Column
-findColumn tbls (TableColumn tblName colName) =
+findColumn :: [(Lib3.TableName, DataFrame)] -> Lib3.SelectColumn -> Maybe Column
+findColumn tbls (Lib3.TableColumn tblName colName) = findColumnInTable tbls tblName colName
+findColumn tbls (Lib3.Max tblName colName) = findColumnInTable tbls tblName colName
+findColumn tbls (Lib3.Avg tblName colName) = findColumnInTable tbls tblName colName
+findColumn _ _ = Nothing
+
+findColumnInTable :: [(Lib3.TableName, DataFrame)] -> Lib3.TableName -> String -> Maybe Column
+findColumnInTable tbls tblName colName =
     case Data.List.lookup tblName tbls of
         Just (DataFrame columns _) -> Data.List.find (\(Column name _) -> name == colName) columns
         Nothing -> Nothing
-findColumn _ _ = Nothing
 
 -- ONLY SQL PARSER BELOW
 
