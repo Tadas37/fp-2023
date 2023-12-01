@@ -4,7 +4,7 @@ import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..))
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
-import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumns, ParsedStatement(..), TableName, SelectColumn(..), showTableFunction, showTablesFunction)
+import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumns, ParsedStatement(..), TableName, SelectColumn(..), showTableFunction, showTablesFunction, getStatementType, getTableDfByName)
 import Test.Hspec
 
 columnName :: Column -> String
@@ -24,7 +24,6 @@ sampleDataFrame2 = DataFrame
   ]
   []
 
--- Sample database
 sampleDatabase :: [(Lib3.TableName, DataFrame)]
 sampleDatabase = 
   [ ("employees", sampleDataFrame1)
@@ -55,7 +54,6 @@ validYAMLContent =
   "rows:\n" ++
   "  - [1, \"Vi\", \"Po\"]\n" ++
   "  - [2, \"Ed\", \"Dl\"]"
-
 
 main :: IO ()
 main = hspec $ do
@@ -113,7 +111,7 @@ main = hspec $ do
 
   describe "parseStatement in Lib2" $ do
     it "should parse 'SHOW TABLE employees;' correctly" $ do
-      parseStatement "SHOW TABLE employees;" `shouldBe` Right (ShowTable "employees")
+      parseStatement "SHOW TABLE employees;" `shouldBe` Right (Lib2.ShowTable "employees")
 
     it "should parse SELECT * FROM ..." $ do
       parseStatement "SELECT * FROM employees;" `shouldBe` Right (Lib2.SelectAll "employees" Nothing)
@@ -168,18 +166,18 @@ main = hspec $ do
 
   describe "executeStatement in Lib2" $ do
     it "should list columns for 'SHOW TABLE employees;'" $ do
-      let parsed = ShowTable "employees"
+      let parsed = Lib2.ShowTable "employees"
       let expectedColumns = [Column "Columns" StringType]
       let expectedRows = [[StringValue "id"], [StringValue "name"], [StringValue "surname"]]
       executeStatement parsed `shouldBe` Right (DataFrame expectedColumns expectedRows)
 
     it "should give an error for a non-existent table" $ do
-      let parsed = ShowTable "nonexistent"
+      let parsed = Lib2.ShowTable "nonexistent"
       executeStatement parsed `shouldBe` Left "Table nonexistent not found"
 
   describe "parseStatement for SHOW TABLES in Lib2" $ do
     it "should parse 'SHOW TABLES;' correctly" $ do
-      parseStatement "SHOW TABLES;" `shouldBe` Right ShowTables
+      parseStatement "SHOW TABLES;" `shouldBe` Right Lib2.ShowTables
 
     it "should return an error for statements without semicolon for SHOW TABLES" $ do
       parseStatement "SHOW TABLES" `shouldBe` Left "Unsupported or invalid statement"
@@ -206,7 +204,7 @@ main = hspec $ do
     it "should list all tables for 'SHOW TABLES;'" $ do
       let expectedColumns = [Column "Tables" StringType]
       let expectedRows = map (\(name, _) -> [StringValue name]) D.database
-      executeStatement ShowTables `shouldBe` Right (DataFrame expectedColumns expectedRows)
+      executeStatement Lib2.ShowTables `shouldBe` Right (DataFrame expectedColumns expectedRows)
 
 --  describe "executeStatement for AvgColumn in Lib2" $ do
 --    it "should calculate the average of the 'id' column in 'employees'" $
@@ -308,5 +306,12 @@ main = hspec $ do
       let emptyTable = DataFrame [] []
       let result = Lib3.showTableFunction emptyTable
       result `shouldBe` DataFrame [Column "ColumnNames" StringType] []
-  
-  
+
+  describe "Lib3.getTableDfByName" $ do
+    it "returns the correct DataFrame for a valid table name" $ do
+      let result = Lib3.getTableDfByName "employees" sampleDatabase
+      result `shouldBe` Right sampleDataFrame1
+
+    it "returns an error for a non-existent table name" $ do
+      let result = Lib3.getTableDfByName "nonexistent" sampleDatabase
+      result `shouldBe` Left "Table not found: nonexistent"

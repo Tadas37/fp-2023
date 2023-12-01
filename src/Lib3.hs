@@ -12,7 +12,6 @@ module Lib3
     loadFiles,
     getTime,
     parseYAMLContent,
-    getTableDfByName,
     dataFrameToSerializedTable,
     serializeTableToYAML,
     validateStatement,
@@ -36,6 +35,9 @@ module Lib3
     getSelectedColumns,
     showTableFunction,
     showTablesFunction,
+    getStatementType,
+    getTableDfByName,
+    StatementType(..),
   )
 where
 
