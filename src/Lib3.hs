@@ -23,7 +23,6 @@ module Lib3
     filterRows,
     deleteRowsFromDataFrame,
     rowSatisfiesWhereClause,
-    conditionSatisfied,
     compareWithCondition,
     compareValue,
     findColumnIndex,
@@ -67,10 +66,9 @@ import Data.List
       lookup,
       any,
       notElem,
-      filter,
       findIndex,
       (!!),
-      isInfixOf, insert )
+      isInfixOf )
 import qualified Data.Yaml as Y
 import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
@@ -79,7 +77,6 @@ import qualified Data.ByteString.Char8 as BS
 import Data.Either (isRight, isLeft, partitionEithers)
 import Prelude hiding (zip)
 import Data.Maybe ( mapMaybe, isJust, isNothing, fromMaybe )
-import Control.Monad (zipWithM)
 
 type TableName = String
 type FileContent = String
@@ -143,6 +140,7 @@ data Condition
   | LessthanOrEqual SelectColumn ConditionValue
   | GreaterThanOrEqual SelectColumn ConditionValue
   | NotEqual SelectColumn ConditionValue
+  | ColumnValuesEqual SelectColumn SelectColumn
   deriving (Show, Eq)
 
 data ConditionValue
@@ -172,7 +170,7 @@ getTime :: Execution UTCTime
 getTime = liftF $ GetTime id
 
 parseTables :: [FileContent] -> Either String [(TableName, DataFrame)]
-parseTables contents = 
+parseTables contents =
     let parsedTables = map parseYAMLContent contents
         (errors, tables) = partitionEithers parsedTables
     in if null errors
@@ -187,10 +185,10 @@ getTableDfByName tableName tables =
         Nothing -> Left $ "Table not found: " ++ tableName
 
 parseSql :: SQLQuery -> Either ErrorMessage ParsedStatement
-parseSql query = 
+parseSql query =
     case parseStatement query of
         Right parsedStatement -> Right parsedStatement
-        Left error -> Left error
+        Left err -> Left err
 
 getTableNames :: Lib3.ParsedStatement -> [Lib3.TableName]
 getTableNames (Lib3.SelectAll tableNames _) = tableNames
@@ -202,21 +200,20 @@ getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
 getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
 getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
 getTableNames (Lib3.Invalid _) = []
-getTableNames _ = [] 
 
 deleteRows :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> Either ErrorMessage (Lib3.TableName, DataFrame)
 deleteRows (Lib3.DeleteStatement tableName whereClause) tables =
     case lookup tableName tables of
-        Just df -> 
+        Just df ->
             case Lib3.filterRows df whereClause of
                 Right dfFiltered -> Right (tableName, dfFiltered)
                 Left errMsg -> Left errMsg
         Nothing -> Left $ "Table not found: " ++ tableName
 deleteRows (Lib3.SelectAll _ _) _ = Left "SelectAll not valid for DeleteRows"
-deleteRows (Lib3.SelectAggregate _ _ _) _ = Left "SelectAggregate not valid for DeleteRows"
-deleteRows (Lib3.SelectColumns _ _ _) _ = Left "SelectColumns not valid for DeleteRows"
-deleteRows (Lib3.InsertStatement _ _ _) _ = Left "InsertStatement not valid for DeleteRows"
-deleteRows (Lib3.UpdateStatement _ _ _ _) _ = Left "UpdateStatement not valid for DeleteRows"
+deleteRows (Lib3.SelectAggregate {}) _ = Left "SelectAggregate not valid for DeleteRows"
+deleteRows (Lib3.SelectColumns {}) _ = Left "SelectColumns not valid for DeleteRows"
+deleteRows (Lib3.InsertStatement {}) _ = Left "InsertStatement not valid for DeleteRows"
+deleteRows (Lib3.UpdateStatement {}) _ = Left "UpdateStatement not valid for DeleteRows"
 deleteRows (Lib3.ShowTableStatement _) _ = Left "ShowTableStatement not valid for DeleteRows"
 deleteRows Lib3.ShowTablesStatement _ = Left "ShowTablesStatement not valid for DeleteRows"
 deleteRows (Lib3.Invalid _) _ = Left "Invalid statement cannot be processed in DeleteRows"
@@ -237,10 +234,10 @@ insertRows (Lib3.InsertStatement tableName maybeSelectedColumns row) tables =
                 Left errMsg -> error errMsg
         Nothing -> error $ "Table not found: " ++ tableName
 insertRows (Lib3.SelectAll _ _) _ = error "SelectAll not valid for InsertRows"
-insertRows (Lib3.SelectAggregate _ _ _) _ = error "SelectAggregate not valid for InsertRows"
-insertRows (Lib3.SelectColumns _ _ _) _ = error "SelectColumns not valid for InsertRows"
+insertRows (Lib3.SelectAggregate {}) _ = error "SelectAggregate not valid for InsertRows"
+insertRows (Lib3.SelectColumns {}) _ = error "SelectColumns not valid for InsertRows"
 insertRows (Lib3.DeleteStatement _ _) _ = error "DeleteStatement not valid for InsertRows"
-insertRows (Lib3.UpdateStatement _ _ _ _) _ = error "UpdateStatement not valid for InsertRows"
+insertRows (Lib3.UpdateStatement {}) _ = error "UpdateStatement not valid for InsertRows"
 insertRows (Lib3.ShowTableStatement _) _ = error "ShowTableStatement not valid for InsertRows"
 insertRows Lib3.ShowTablesStatement _ = error "ShowTablesStatement not valid for InsertRows"
 insertRows (Lib3.Invalid _) _ = error "Invalid statement cannot be processed in InsertRows"
@@ -248,25 +245,25 @@ insertRows (Lib3.Invalid _) _ = error "Invalid statement cannot be processed in 
 updateRows :: ParsedStatement -> [(TableName, DataFrame)] -> Either ErrorMessage (TableName, DataFrame)
 updateRows (UpdateStatement tableName columns row maybeWhereClause) tables =
     case lookup tableName tables of
-        Just df -> 
+        Just df ->
             let updatedDf = updateRowsInTable tableName columns row maybeWhereClause df
             in case updatedDf of
                 Right dfUpdated -> Right (tableName, dfUpdated)
                 Left errMsg -> Left errMsg
         Nothing -> Left $ "Table not found: " ++ tableName
 updateRows (SelectAll _ _) _ = Left "SelectAll not valid for UpdateRows"
-updateRows (SelectAggregate _ _ _) _ = Left "SelectAggregate not valid for UpdateRows"
-updateRows (SelectColumns _ _ _) _ = Left "SelectColumns not valid for UpdateRows"
+updateRows (SelectAggregate {}) _ = Left "SelectAggregate not valid for UpdateRows"
+updateRows (SelectColumns {}) _ = Left "SelectColumns not valid for UpdateRows"
 updateRows (DeleteStatement _ _) _ = Left "DeleteStatement not valid for UpdateRows"
 updateRows (ShowTableStatement _) _ = Left "ShowTableStatement not valid for UpdateRows"
 updateRows ShowTablesStatement _ = Left "ShowTablesStatement not valid for UpdateRows"
-updateRows (InsertStatement _ _ _) _ = Left "InsertStatement not valid for UpdateRows"
+updateRows (InsertStatement {}) _ = Left "InsertStatement not valid for UpdateRows"
 updateRows (Invalid _) _ = Left "Invalid statement cannot be processed in UpdateRows"
 
 
 
 getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> [Row]
-getReturnTableRows parsedStatement tables timeStamp = 
+getReturnTableRows parsedStatement tables _ =
     case parsedStatement of
         SelectAll _ _ -> extractAllRows tables
         SelectColumns tableNames conditions _ -> Lib3.extractSelectedColumnsRows tableNames conditions tables
@@ -274,17 +271,17 @@ getReturnTableRows parsedStatement tables timeStamp =
         _ -> error "Unhandled statement type in getReturnTableRows"
     where
         extractAllRows :: [(TableName, DataFrame)] -> [Row]
-        extractAllRows tbls = concatMap (dfRows . snd) tbls
+        extractAllRows = concatMap (dfRows . snd)
 
         dfRows :: DataFrame -> [Row]
         dfRows (DataFrame _ rows) = rows
 
 
 generateDataFrame :: [Column] -> [Row] -> DataFrame
-generateDataFrame columns rows = DataFrame columns rows
+generateDataFrame = DataFrame
 
 showTablesFunction :: [TableName] -> DataFrame
-showTablesFunction tables = 
+showTablesFunction tables =
     let column = Column "tableName" StringType
         rows = map (\name -> [StringValue name]) tables
     in DataFrame [column] rows
@@ -292,13 +289,13 @@ showTablesFunction tables =
 
 showTableFunction :: DataFrame -> DataFrame
 showTableFunction (DataFrame columns _) =
-    let newDf = DataFrame [Column "ColumnNames" StringType] 
+    let newDf = DataFrame [Column "ColumnNames" StringType]
                           (map (\(Column colName _) -> [StringValue colName]) columns)
     in newDf
 
 
 executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
-executeSql statement = 
+executeSql statement =
   case parseSql statement of
         Left err -> return $ Left err
         Right parsedStatement -> do
@@ -306,7 +303,7 @@ executeSql statement =
           tableFiles <- loadFiles tableNames
           case tableFiles of
             Left err -> return $ Left err
-            Right content -> 
+            Right content ->
               case parseTables content of
                 Left parseErr -> return $ Left parseErr
                 Right tables -> do
@@ -345,7 +342,7 @@ executeSql statement =
                         return $ Right allTables
                       ShowTable -> executeShowTable parsedStatement tables
                       InvalidStatement -> return $ Left "Invalid statement"
-          where    
+          where
 executeShowTable :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Either ErrorMessage DataFrame)
 executeShowTable parsedStatement tables = do
   let nonSelectTableName = getNonSelectTableNameFromStatement parsedStatement
@@ -382,7 +379,7 @@ convertRows :: [[Y.Value]] -> [Row]
 convertRows = Data.List.map (Data.List.map convertValue)
 
 getStatementType :: String -> StatementType
-getStatementType query 
+getStatementType query
     | "select" `isPrefixOf` lowerQuery = if "show" `isPrefixOf` lowerQuery then ShowTable else Select
     | "insert" `isPrefixOf` lowerQuery = Insert
     | "update" `isPrefixOf` lowerQuery = Update
@@ -488,12 +485,23 @@ validateExistingClause (IsValueBool _ tableName columnName ) tables = tablesExis
 validateExistingClause (Conditions conditions) tables = Data.List.all validCondition conditions
   where
     validCondition :: Condition -> Bool
-    validCondition (Equals column val) = maybe False (columnsExistInTable [column]) (Data.List.lookup (getTableNameFromColumn column) tables) && selectColumnMatchesValue column tables (getValueFromConditionValue val)
-    validCondition (LessThan column val) = maybe False (columnsExistInTable [column]) (Data.List.lookup (getTableNameFromColumn column) tables) && selectColumnMatchesValue column tables (getValueFromConditionValue val)
-    validCondition (GreaterThan column val) = maybe False (columnsExistInTable [column]) (Data.List.lookup (getTableNameFromColumn column) tables) && selectColumnMatchesValue column tables (getValueFromConditionValue val)
-    validCondition (LessthanOrEqual column val) = maybe False (columnsExistInTable [column]) (Data.List.lookup (getTableNameFromColumn column) tables) && selectColumnMatchesValue column tables (getValueFromConditionValue val)
-    validCondition (GreaterThanOrEqual column val) = maybe False (columnsExistInTable [column]) (Data.List.lookup (getTableNameFromColumn column) tables) && selectColumnMatchesValue column tables (getValueFromConditionValue val)
-    validCondition (NotEqual column val) = maybe False (columnsExistInTable [column]) (Data.List.lookup (getTableNameFromColumn column) tables) && selectColumnMatchesValue column tables (getValueFromConditionValue val)
+    validCondition (Equals column val) = columnExists column tables && selectColumnMatchesValue column tables (getValueFromConditionValue val)
+    validCondition (LessThan column val) = columnExists column tables && selectColumnMatchesValue column tables (getValueFromConditionValue val)
+    validCondition (GreaterThan column val) = columnExists column tables && selectColumnMatchesValue column tables (getValueFromConditionValue val)
+    validCondition (LessthanOrEqual column val) = columnExists column tables && selectColumnMatchesValue column tables (getValueFromConditionValue val)
+    validCondition (GreaterThanOrEqual column val) = columnExists column tables && selectColumnMatchesValue column tables (getValueFromConditionValue val)
+    validCondition (NotEqual column val) = columnExists column tables && selectColumnMatchesValue column tables (getValueFromConditionValue val)
+    validCondition (ColumnValuesEqual col1 col2) = columnExists col1 tables && columnExists col2 tables && columnTypesMatch col1 col2
+
+    columnExists :: SelectColumn -> [(TableName, DataFrame)] -> Bool
+    columnExists column tbs = maybe False (columnsExistInTable [column]) (Data.List.lookup (getTableNameFromColumn column) tbs)
+
+    columnTypesMatch :: SelectColumn -> SelectColumn -> Bool
+    columnTypesMatch (TableColumn tName1 cName1) (TableColumn tName2 cName2) = table1ColumnType == table2ColumnType
+      where
+        table1ColumnType = getColumnType $ getColumnByName cName1 $ getTableColumns tables tName1
+        table2ColumnType = getColumnType $ getColumnByName cName2 $ getTableColumns tables tName2
+    columnTypesMatch _ _ = False
 
 selectColumnMatchesValue :: SelectColumn -> [(TableName, DataFrame)] -> Value -> Bool
 selectColumnMatchesValue col@(TableColumn tableName columnName) tables val = tableExists && isMatchingValue
@@ -517,7 +525,7 @@ getValueFromConditionValue (StrValue str) = StringValue str
 getValueFromConditionValue (IntValue num) = IntegerValue num
 
 columnMatchesValue :: Column -> Value -> Bool
-columnMatchesValue (Column _ t) value = isNothing maybeValueType || (isJust maybeValueType && fromMaybe IntegerType maybeValueType == t )
+columnMatchesValue (Column _ t) value = isNothing maybeValueType || isJust maybeValueType && fromMaybe IntegerType maybeValueType == t
   where
     maybeValueType = getColumnTypeFromValueType value
 
@@ -590,7 +598,7 @@ findColumnInTable tbls tblName colName =
         Just (DataFrame columns _) -> Data.List.find (\(Column name _) -> name == colName) columns
         Nothing -> Nothing
 
--- ONLY SQL PARSER BELOW
+-- SQL PARSER
 
 parseStatement :: String  -> Either ErrorMessage ParsedStatement
 parseStatement input
@@ -604,20 +612,13 @@ mapStatementType :: [String] -> Either ErrorMessage ParsedStatement
 mapStatementType statement = do
   statementType <- guessStatementType statement
   case statementType of
-      Select -> do
-        parseSelect (Data.List.drop 1 statement)
-      Insert -> do
-        parseInsert statement
-      Delete -> do
-        parseDelete statement
-      Update -> do
-        parseUpdate statement
-      ShowTable -> do
-        parseShowTable statement
-      ShowTables -> do
-        parseShowTables statement
-      InvalidStatement -> do
-        Left "Invalid statement type"
+      Select -> parseSelect (Data.List.drop 1 statement)
+      Insert -> parseInsert statement
+      Delete -> parseDelete statement
+      Update -> parseUpdate statement
+      ShowTable -> parseShowTable statement
+      ShowTables -> parseShowTables statement
+      InvalidStatement -> Left "Invalid statement type"
 
 guessStatementType :: [String] -> Either ErrorMessage StatementType
 guessStatementType (x : y : _)
@@ -774,7 +775,7 @@ getSelectedColumnsForUpdate _ _ = Left "Invalid column formating for UPDATE stat
 
 getValidUpdateColumn :: String -> String -> String -> TableName -> Either ErrorMessage SelectColumn
 getValidUpdateColumn val1 op val2 tableName
-  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || ("'" `Data.List.isPrefixOf` val2 && "'" `Data.List.isSuffixOf` val2 )) = Right $ TableColumn tableName val1
+  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || "'" `Data.List.isPrefixOf` val2 && "'" `Data.List.isSuffixOf` val2) = Right $ TableColumn tableName val1
   | otherwise = Left "Unable to update table do to bad update statement. Failed to parse new column values"
 
 checkIfDoesNotContainSpecialSymbols :: String -> Bool
@@ -794,7 +795,7 @@ getValuesToUpdate _  = Left "Invalid column formating for UPDATE statement"
 
 getValidUpdateValue :: String -> String -> String -> Either ErrorMessage Value
 getValidUpdateValue val1 op val2
-  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || ("'" `Data.List.isPrefixOf` val2 && "'" `Data.List.isSuffixOf` val2 )) = getValueFromString val2
+  | op == "=" && checkIfDoesNotContainSpecialSymbols val1 && (isNumber val2 || val2 == "true" || val2 == "false" || "'" `Data.List.isPrefixOf` val2 && "'" `Data.List.isSuffixOf` val2) = getValueFromString val2
   | otherwise = Left "Unable to update table do to bad update statement. Failed to parse columns to be updated"
 
 getValueFromString :: String -> Either ErrorMessage Value
@@ -814,12 +815,11 @@ parseShowTables ["show", "tables"] = Right ShowTablesStatement
 parseShowTables _ = Left "Failed to parse SHOW TABLES statement"
 
 parseShowTable :: [String] -> Either ErrorMessage ParsedStatement
-parseShowTable ["show", "table", tableName] = do
-  if isValidTable tableName
-    then do
-      return $ ShowTableStatement tableName
-    else do
-      Left $ "SHOW TABLE table name contains ilegal characters"Data.List.++ " " Data.List.++ tableName
+parseShowTable ["show", "table", tableName] = if isValidTable tableName
+  then do
+    return $ ShowTableStatement tableName
+  else do
+    Left $ "SHOW TABLE table name contains ilegal characters"Data.List.++ " " Data.List.++ tableName
 
 parseShowTable _ = Left "Failed to parse SHOW TABLE statement"
 
@@ -843,8 +843,7 @@ parseSelect statement = do
     ColumnsAndTime -> do
       columnsWithTableAb <- getColumnWithTableAb statement tableNamesAndAb
       parseColumnsSelect tableNames columnsWithTableAb whereClause
-    AllColumns -> do
-      parseAllColumns tableNames whereClause
+    AllColumns -> parseAllColumns tableNames whereClause
 
 castEither :: a -> Either ErrorMessage a -> a
 castEither defaultValue eitherValue = case eitherValue of
@@ -880,6 +879,7 @@ parseAggregateColumn column tableNames
     where
       dropedCommaColumn = if Data.List.last column == ',' then Data.List.init column else column
       removedAggregate = if Data.List.last column == ',' then Data.List.init (Data.List.drop 4 (Data.List.init column)) else Data.List.drop 4 (Data.List.init column)
+      -- checked in function that calls this function so should be fine if code doesn't change (for now)
       [tableAb, columnName] = wordsWhen (== '.') removedAggregate
       isValid = findIfTupleWithSndElemEqualToExists tableAb tableNames
       tableName = castEither "Upsi" $ getFstTupleElemBySndElemInList (tableAb, columnName) tableNames
@@ -888,7 +888,7 @@ parseAggregateColumn column tableNames
 findIfTupleWithSndElemEqualToExists :: Eq a => a -> [(b, a)] -> Bool
 findIfTupleWithSndElemEqualToExists _ [] = False;
 findIfTupleWithSndElemEqualToExists val [(_, sndVal)] = val == sndVal
-findIfTupleWithSndElemEqualToExists val ((_, sndVal) : xs) = (val == sndVal) || findIfTupleWithSndElemEqualToExists val xs
+findIfTupleWithSndElemEqualToExists val ((_, sndVal) : xs) = val == sndVal || findIfTupleWithSndElemEqualToExists val xs
 
 
 getTableNamesAndAb :: [String] -> Either ErrorMessage [(TableName, String)]
@@ -919,36 +919,33 @@ getColumnWithTableAb statement tableNames = do
   columnAndAbList <- Right $ getListOfTableAbAndColumn beforeFrom
   isValidColumnNames <- Right $ Data.List.all isValidColumn beforeFrom
   if Data.List.null columnAndAbList || odd (Data.List.length columnAndAbList) || not isValidColumnNames
-    then do
-      Left "error parsing columns. Maybe table name abbreviation was not provided?"
+    then Left "error parsing columns. Maybe table name abbreviation was not provided?"
     else do
       splitList <- splitIntoTuples columnAndAbList
       getCorrectTableAndColumns splitList tableNames
 
 getCorrectTableAndColumns :: [(String, String)] -> [(String, String)] -> Either ErrorMessage [(String, String)]
 
-getCorrectTableAndColumns [columnAndTableAb] tableNames = do
-  if columnAndTableAb == ("now()", "now()")
-    then 
-      return [("now()", "now()")]
-    else do
-      tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
-      return [(tableName, snd columnAndTableAb)]
+getCorrectTableAndColumns [columnAndTableAb] tableNames = if columnAndTableAb == ("now()", "now()")
+  then
+    return [("now()", "now()")]
+  else do
+    tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
+    return [(tableName, snd columnAndTableAb)]
 
-getCorrectTableAndColumns (columnAndTableAb : xs) tableNames = do
-    if columnAndTableAb == ("now()", "now()")
+getCorrectTableAndColumns (columnAndTableAb : xs) tableNames = if columnAndTableAb == ("now()", "now()")
+then do
+  rest <- getCorrectTableAndColumns xs tableNames
+  return $ ("now()", "now()") : rest
+else do
+  tableExists <- Right $ findIfTupleWithSndElemEqualToExists (fst columnAndTableAb) tableNames
+  if tableExists
     then do
+      tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
       rest <- getCorrectTableAndColumns xs tableNames
-      return $ ("now()", "now()") : rest
-    else do
-      tableExists <- Right $ findIfTupleWithSndElemEqualToExists (fst columnAndTableAb) tableNames
-      if tableExists
-        then do
-          tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
-          rest <- getCorrectTableAndColumns xs tableNames
-          return $ (tableName, snd columnAndTableAb) : rest
-        else
-          Left "Error parsing column table abbreviations"
+      return $ (tableName, snd columnAndTableAb) : rest
+    else
+      Left "Error parsing column table abbreviations"
 
 getCorrectTableAndColumns _ _ = Left "Something went wrong when trying to find match for table abbreviation"
 
@@ -969,11 +966,11 @@ getFstTupleElemBySndElemInList _ _ = Left "Failed to find valid table that match
 getListOfTableAbAndColumn :: [String] -> [String]
 getListOfTableAbAndColumn [] = []
 getListOfTableAbAndColumn [originalAbAndColumn] = if abAndColumn == "now()" then ["now()", "now()"] else wordsWhen (== '.') abAndColumn
-  where 
-    abAndColumn = if Data.List.last originalAbAndColumn == ',' then init originalAbAndColumn else originalAbAndColumn 
+  where
+    abAndColumn = if Data.List.last originalAbAndColumn == ',' then init originalAbAndColumn else originalAbAndColumn
 getListOfTableAbAndColumn (originalAbAndColumn : xs) = (if abAndColumn == "now()" then ["now()", "now()"] else wordsWhen (== '.') abAndColumn) Data.List.++ getListOfTableAbAndColumn xs
-  where 
-    abAndColumn = if Data.List.last originalAbAndColumn == ',' then init originalAbAndColumn else originalAbAndColumn 
+  where
+    abAndColumn = if Data.List.last originalAbAndColumn == ',' then init originalAbAndColumn else originalAbAndColumn
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
 wordsWhen p s = case Data.List.dropWhile p s of
@@ -1023,7 +1020,7 @@ isValidColumn column = isSplitByDot && isNotAggregate && hasNoParenthesies || re
   where
     removedComma = if "," `Data.List.isSuffixOf` column then init column else column
     (beforeDot, afterDot) = Data.List.break (== '.') column
-    isSplitByDot = not (Data.List.null beforeDot) && not (Data.List.null afterDot) && (Data.List.length afterDot > 1)
+    isSplitByDot = not (Data.List.null beforeDot) && not (Data.List.null afterDot) && Data.List.length afterDot > 1
     isNotAggregate = not $ isAggregate column
     hasNoParenthesies = not ("'" `Data.List.isPrefixOf` column || "'" `Data.List.isSuffixOf` column)
 
@@ -1046,12 +1043,9 @@ isAggregate column
     where
       removedCommaColumn = if Data.List.last column == ',' then Data.List.init column else column
 statementClause :: [String] -> [(TableName, String)] -> Either ErrorMessage (Maybe WhereClause)
-statementClause afterWhere tableNames = do
-  case Data.List.length afterWhere of
-    0 -> do
-      Right Nothing
-    _ -> do
-      tryParseWhereClause afterWhere tableNames
+statementClause afterWhere tableNames = case Data.List.length afterWhere of
+  0 -> Right Nothing
+  _ -> tryParseWhereClause afterWhere tableNames
 
 tryParseWhereClause :: [String] -> [(TableName, String)] -> Either ErrorMessage (Maybe WhereClause)
 tryParseWhereClause afterWhere tableNames
@@ -1065,7 +1059,7 @@ tryParseWhereClause afterWhere tableNames
   where
     afterWhereWithoutWhere = Data.List.drop 1 afterWhere
     (_, afterIs) = Data.List.break (== "is") afterWhereWithoutWhere
-    firstElementIsColumn = not (Data.List.null afterWhereWithoutWhere) && (Data.List.length (wordsWhen (== '.') (Data.List.head afterWhereWithoutWhere)) == 2)
+    firstElementIsColumn = not (Data.List.null afterWhereWithoutWhere) && Data.List.length (wordsWhen (== '.') (Data.List.head afterWhereWithoutWhere)) == 2
     isBoolIsTrueFalseClauseLike = Data.List.length afterWhereWithoutWhere == 3 && Data.List.length afterIs == 2 && (afterIs Data.List.!! 1 == "false" || afterIs Data.List.!! 1 == "true") && firstElementIsColumn
     isAndClauseLike = Data.List.null afterIs
 
@@ -1111,6 +1105,7 @@ getConditionValue condition
 
 getCondition :: String -> String -> String -> [(TableName, String)] -> Either ErrorMessage Condition
 getCondition val1 op val2 tableNames
+  | op == "=" && isRight val1TableEither && isRight val2TableEither && val1HasDot && val2HasDot = Right $ ColumnValuesEqual (TableColumn val1Table (Data.List.drop 1 val1Column)) (TableColumn val2Table (Data.List.drop 1 val2Column))
   | op == "=" && isRight val1TableEither && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ Equals (TableColumn val1Table (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
   | op == "=" && isRight val2TableEither && val2HasDot && isJust value1Type && isNothing value2Type && isCondition1= Right $ Equals (TableColumn val2Table (Data.List.drop 1 val2Column)) $ castEither defaultCondition condition1
   | op == ">" && isRight val1TableEither && val1HasDot && isJust value2Type && isNothing value1Type && isCondition2 = Right $ GreaterThan (TableColumn val1Table (Data.List.drop 1 val1Column)) $ castEither defaultCondition condition2
@@ -1134,8 +1129,8 @@ getCondition val1 op val2 tableNames
     val2HasDot = not (Data.List.null (Data.List.drop 1 val2Column))
     condition1 = getConditionValue val1
     condition2 = getConditionValue val2
-    val1TableEither  = getFstTupleElemBySndElemInList (val1TableAb, "I LOVE HAKELL") tableNames
-    val2TableEither  = getFstTupleElemBySndElemInList (val2TableAb, "THIS CODE I SO GREAT. ITS THE BEST CODE. THE BEST") tableNames
+    val1TableEither = getFstTupleElemBySndElemInList (val1TableAb, "I LOVE HASKELL ♥") tableNames
+    val2TableEither = getFstTupleElemBySndElemInList (val2TableAb, "THIS CODE I SO GREAT. ITS THE BEST CODE. THE BEST") tableNames
 
     val1Table = castEither "If you are the user of this app and you are seeing this. I am sorry to inform you that the creators of this program suck at coding" val1TableEither
     val2Table = castEither "If you are the user of this app and you are seeing this. I am sorry to inform you that the creators of this program suck at coding" val2TableEither
@@ -1170,12 +1165,10 @@ isWhereAndOperation condition1 operator condition2
 
 
 statementClause' :: [String] -> TableName -> Either ErrorMessage (Maybe WhereClause)
-statementClause' afterWhere tableName = do
-  case Data.List.length afterWhere of
-    0 -> do
-      Right Nothing
-    _ -> do
-      tryParseWhereClause' afterWhere tableName
+statementClause' afterWhere tableName = case Data.List.length afterWhere of
+  0 -> Right Nothing
+  _ -> do
+    tryParseWhereClause' afterWhere tableName
 
 tryParseWhereClause' :: [String] -> TableName -> Either ErrorMessage (Maybe WhereClause)
 tryParseWhereClause' afterWhere tableName
@@ -1189,7 +1182,7 @@ tryParseWhereClause' afterWhere tableName
   where
     afterWhereWithoutWhere = Data.List.drop 1 afterWhere
     (_, afterIs) = Data.List.break (== "is") afterWhereWithoutWhere
-    firstElementIsColumn = not (Data.List.null afterWhereWithoutWhere) && (Data.List.length (wordsWhen (== '.') (Data.List.head afterWhereWithoutWhere)) == 1)
+    firstElementIsColumn = not (Data.List.null afterWhereWithoutWhere) && Data.List.length (wordsWhen (== '.') (Data.List.head afterWhereWithoutWhere)) == 1
     isBoolIsTrueFalseClauseLike = Data.List.length afterWhereWithoutWhere == 3 && Data.List.length afterIs == 2 && (afterIs Data.List.!! 1 == "false" || afterIs Data.List.!! 1 == "true") && firstElementIsColumn
     isAndClauseLike = Data.List.null afterIs
 
@@ -1333,6 +1326,7 @@ columnNameFromCondition (LessThan colName _) = extractColumnName colName
 columnNameFromCondition (LessthanOrEqual colName _) = extractColumnName colName
 columnNameFromCondition (GreaterThanOrEqual colName _) = extractColumnName colName
 columnNameFromCondition (NotEqual colName _) = extractColumnName colName
+columnNameFromCondition _ = "Error getting column name"
 
 extractColumnName :: SelectColumn -> String
 extractColumnName (TableColumn _ colName) = colName
@@ -1392,25 +1386,23 @@ findColumnIndex columnName = Data.List.findIndex (\(Column name _) -> name == co
 
 createRowFromValues :: [ColumnName] -> [Column] -> [Value] -> Either ErrorMessage Row
 
-createRowFromValues insertCols [col] values = do
-  if not (null insertCols || null values) && getColumnName col `elem` insertCols
-    then do
-      let colIndex = fromMaybe (-1) $ Data.List.elemIndex (getColumnName col) insertCols
-      element <- Right $ values !! colIndex
-      return [element]
-    else
-      return [NullValue]
+createRowFromValues insertCols [col] values = if not (null insertCols || null values) && getColumnName col `elem` insertCols
+  then do
+    let colIndex = fromMaybe (-1) $ Data.List.elemIndex (getColumnName col) insertCols
+    element <- Right $ values !! colIndex
+    return [element]
+  else
+    return [NullValue]
 
-createRowFromValues insertCols (col : xs) values = do
-  if not (null insertCols || null values) && getColumnName col `elem` insertCols
-    then do
-      let colIndex = fromMaybe (-1) (Data.List.elemIndex (getColumnName col) insertCols)
-      element <- Right $ values !! colIndex
-      rest <- createRowFromValues (removeAtIndex colIndex insertCols) xs (removeAtIndex colIndex values)
-      return $ element : rest
-    else do
-      rest <- createRowFromValues insertCols xs values
-      return $ NullValue : rest
+createRowFromValues insertCols (col : xs) values = if not (null insertCols || null values) && getColumnName col `elem` insertCols
+  then do
+    let colIndex = fromMaybe (-1) (Data.List.elemIndex (getColumnName col) insertCols)
+    element <- Right $ values !! colIndex
+    rest <- createRowFromValues (removeAtIndex colIndex insertCols) xs (removeAtIndex colIndex values)
+    return $ element : rest
+  else do
+    rest <- createRowFromValues insertCols xs values
+    return $ NullValue : rest
 
 
 createRowFromValues _ _ _ = Left "Should not be here"
@@ -1428,7 +1420,7 @@ removeAtIndex index list
 -- ========================================================================
 --Start of Update
 updateRowsInTable :: TableName -> SelectedColumns -> Row -> Maybe WhereClause -> DataFrame -> Either ErrorMessage DataFrame
-updateRowsInTable tableName columns newRow maybeWhereClause (DataFrame dfColumns dfRows) =
+updateRowsInTable _ columns newRow maybeWhereClause (DataFrame dfColumns dfRows) =
     Right $ DataFrame dfColumns (map updateRowIfRequired dfRows)
   where
     updateRowIfRequired row =
@@ -1440,17 +1432,14 @@ updateRowsInTable tableName columns newRow maybeWhereClause (DataFrame dfColumns
             Nothing -> updateRowValues dfColumns columns newRow row
 
 updateRowValues :: [Column] -> SelectedColumns -> Row -> Row -> Row
-updateRowValues columns selectCols newRow row = 
-    map updateValue (zip [0..] row)
+updateRowValues columns selectCols newRow = zipWith (curry updateValue) [0..]
   where
     colNames = map extractColumnName selectCols
     colIndices = mapMaybe (`findColumnIndex` columns) colNames
     newValueMap = zip colIndices newRow
 
-    updateValue (idx, value) = 
-        case lookup idx newValueMap of
-            Just newValue -> newValue
-            Nothing -> value
+    updateValue (idx, value) =
+        fromMaybe value (lookup idx newValueMap)
 
 -- ========================================================================
 -- End of Update
