@@ -1313,13 +1313,6 @@ filterRows df@(DataFrame cols _) (Just wc) =
     else Left "Error: Specified column in WhereClause does not exist."
 filterRows (DataFrame cols _) Nothing = Right $ DataFrame cols []
 
-deleteRowsFromDataFrame :: DataFrame -> WhereClause -> Either String DataFrame
-deleteRowsFromDataFrame (DataFrame cols rows) wc =
-    let nonMatchingRows = filter (not . rowSatisfiesWhereClause wc cols) rows
-    in if length nonMatchingRows == length rows
-       then Left "Error: No rows deleted. None match the specified condition."
-       else Right $ DataFrame cols nonMatchingRows
-
 whereClauseHasValidColumns :: WhereClause -> [Column] -> Bool
 whereClauseHasValidColumns (IsValueBool _ _ columnName) cols = isJust (findColumnIndex columnName cols)
 whereClauseHasValidColumns (Conditions conditions) cols = Data.List.all (`conditionHasValidColumn` cols) conditions
@@ -1455,31 +1448,6 @@ updateRowValues columns selectCols newRow row =
 
 -- ========================================================================
 -- End of Update
-
-updateRowsInTable :: TableName -> SelectedColumns -> Row -> Maybe WhereClause -> DataFrame -> Either ErrorMessage DataFrame
-updateRowsInTable tableName columns newRow maybeWhereClause (DataFrame dfColumns dfRows) =
-    Right $ DataFrame dfColumns (map updateRowIfRequired dfRows)
-  where
-    updateRowIfRequired row =
-        case maybeWhereClause of
-            Just whereClause ->
-                if rowSatisfiesWhereClause whereClause dfColumns row
-                then updateRowValues dfColumns columns newRow row
-                else row
-            Nothing -> updateRowValues dfColumns columns newRow row
-
-updateRowValues :: [Column] -> SelectedColumns -> Row -> Row -> Row
-updateRowValues columns selectCols newRow row = 
-    map updateValue (zip [0..] row)
-  where
-    colNames = map extractColumnName selectCols
-    colIndices = mapMaybe (`findColumnIndex` columns) colNames
-    newValueMap = zip colIndices newRow
-
-    updateValue (idx, value) = 
-        case lookup idx newValueMap of
-            Just newValue -> newValue
-            Nothing -> value
 
 extractColumnNames :: SelectedColumns -> [ColumnName]
 extractColumnNames = mapMaybe extractName
