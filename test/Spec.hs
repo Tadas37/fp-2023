@@ -375,3 +375,55 @@ main = hspec $ do
       let expectedResult = DataFrame expectedColumns modifiedRows
       let result = Lib3.generateDataFrame columns modifiedRows
       result `shouldBe` expectedResult
+
+  describe "validateStatement" $ do
+    let sampleTable = ("employees", DataFrame [Column "id" IntegerType, Column "name" StringType] [])
+    let sampleDatabase = [sampleTable]
+
+    it "validates a correct Select statement" $ do
+      let statement = Lib3.SelectAll ["employees"] Nothing
+      Lib3.validateStatement statement [sampleTable] `shouldBe` (True, "Non existant columns or tables in statement or values dont match column")
+
+    it "identifies Select on a non-existent table" $ do
+      let statement = Lib3.SelectAll ["nonexistent"] Nothing
+      Lib3.validateStatement statement [sampleTable] `shouldBe` (False, "Non existant columns or tables in statement or values dont match column")
+
+    it "identifies Select with a non-existent column" $ do
+      let statement = Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "age"] Nothing
+      Lib3.validateStatement statement [sampleTable] `shouldBe` (False, "Non existant columns or tables in statement or values dont match column")
+
+    it "validates a correct Insert statement" $ do
+      let statement = Lib3.InsertStatement "employees" (Just [Lib3.TableColumn "employees" "id", Lib3.TableColumn "employees" "name"]) [IntegerValue 1, StringValue "Alice"]
+      Lib3.validateStatement statement sampleDatabase `shouldBe` (True, "Non existant columns or tables in statement or values dont match column")
+
+    it "identifies Insert on a non-existent table" $ do
+      let statement = Lib3.InsertStatement "nonexistent" Nothing []
+      Lib3.validateStatement statement sampleDatabase `shouldBe` (False, "Non existant columns or tables in statement or values dont match column")
+
+    it "validates a correct Update statement" $ do
+      let statement = Lib3.UpdateStatement "employees" [Lib3.TableColumn "employees" "name"] [StringValue "Bob"] Nothing
+      Lib3.validateStatement statement sampleDatabase `shouldBe` (True, "Non existant columns or tables in statement or values dont match column")
+
+    it "identifies Update with a non-existent column" $ do
+      let statement = Lib3.UpdateStatement "employees" [Lib3.TableColumn "employees" "age"] [IntegerValue 30] Nothing
+      Lib3.validateStatement statement sampleDatabase `shouldBe` (False, "Non existant columns or tables in statement or values dont match column")
+
+    it "validates a correct Delete statement" $ do
+      let statement = Lib3.DeleteStatement "employees" Nothing
+      Lib3.validateStatement statement sampleDatabase `shouldBe` (True, "Non existant columns or tables in statement or values dont match column")
+
+    it "identifies Delete on a non-existent table" $ do
+      let statement = Lib3.DeleteStatement "nonexistent" Nothing
+      Lib3.validateStatement statement sampleDatabase `shouldBe` (False, "Non existant columns or tables in statement or values dont match column")
+
+    it "validates a ShowTables statement" $ do
+      let statement = Lib3.ShowTablesStatement
+      Lib3.validateStatement statement sampleDatabase `shouldBe` (True, "Non existant columns or tables in statement or values dont match column")
+
+    it "validates a ShowTable statement" $ do
+      let statement = Lib3.ShowTableStatement "employees"
+      Lib3.validateStatement statement sampleDatabase `shouldBe` (True, "Non existant columns or tables in statement or values dont match column")
+
+    it "identifies ShowTable with a non-existent table" $ do
+      let statement = Lib3.ShowTableStatement "nonexistent"
+      Lib3.validateStatement statement sampleDatabase `shouldBe` (False, "Non existant columns or tables in statement or values dont match column")
