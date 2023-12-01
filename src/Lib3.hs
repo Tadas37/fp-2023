@@ -38,6 +38,7 @@ module Lib3
     getStatementType,
     getTableDfByName,
     StatementType(..),
+    getNonSelectTableNameFromStatement,
   )
 where
 

@@ -4,7 +4,7 @@ import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..))
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
-import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumns, ParsedStatement(..), TableName, SelectColumn(..), showTableFunction, showTablesFunction, getStatementType, getTableDfByName)
+import Lib3(parseYAMLContent, serializeTableToYAML,getNonSelectTableNameFromStatement, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumns, ParsedStatement(..), TableName, SelectColumn(..), showTableFunction, showTablesFunction, getStatementType, getTableDfByName)
 import Test.Hspec
 
 columnName :: Column -> String
@@ -315,3 +315,8 @@ main = hspec $ do
     it "returns an error for a non-existent table name" $ do
       let result = Lib3.getTableDfByName "nonexistent" sampleDatabase
       result `shouldBe` Left "Table not found: nonexistent"
+
+  describe "getNonSelectTableNameFromStatement" $ do
+    it "extracts table name from ShowTableStatement correctly" $ do
+      let statement = ShowTableStatement "employees"
+      getNonSelectTableNameFromStatement statement `shouldBe` "employees"
