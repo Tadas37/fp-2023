@@ -1,12 +1,14 @@
 import Data.Either
 import Data.Maybe ()
-import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..))
+import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..), Row(..))
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
 import qualified Lib3 
 import Test.Hspec
 import Data.Time (UTCTime, getCurrentTime)
+import qualified Lib3
+import Control.Exception (evaluate, catch)
 
 columnName :: Column -> String
 columnName (Column name _) = name
@@ -460,7 +462,6 @@ main = hspec $ do
         Right parsed -> Lib3.getTableNames parsed `shouldBe` []
         Left _ -> return () 
   describe "getReturnTableRows" $ do
-    -- Define sample DataFrame and tables
     let sampleDataFrame = DataFrame 
           [ Column "id" IntegerType
           , Column "name" StringType
@@ -496,3 +497,21 @@ main = hspec $ do
       let statement = Lib3.SelectAggregate ["employees"] [Lib3.Max "employees" "id"] Nothing
       let expectedRows = [[IntegerValue 2]] 
       Lib3.getReturnTableRows statement sampleDatabase currentTime `shouldBe` expectedRows
+ 
+  describe "insertRows" $ do
+    let sampleDataFrame = DataFrame [Column "id" IntegerType, Column "name" StringType] [[IntegerValue 1, StringValue "Alice"]]
+    let tables = [("employees", sampleDataFrame)]
+
+    it "successfully inserts a new row into the table" $ do
+        let insertStmt = Lib3.InsertStatement "employees" (Just [Lib3.TableColumn "employees" "id", Lib3.TableColumn "employees" "name"]) [IntegerValue 2, StringValue "Bob"]
+        let (_, updatedDataFrame) = Lib3.insertRows insertStmt tables
+        let expectedRows = [ [IntegerValue 1, StringValue "Alice"]
+                            , [IntegerValue 2, StringValue "Bob"] ]
+        extractRows updatedDataFrame `shouldBe` expectedRows
+
+    it "fails to insert a row into a non-existent table" $ do
+        let insertStmt = Lib3.InsertStatement "nonexistent" (Just [Lib3.TableColumn "nonexistent" "id", Lib3.TableColumn "nonexistent" "name"]) [IntegerValue 2, StringValue "Bob"]
+        evaluate (Lib3.insertRows insertStmt tables) `shouldThrow` anyErrorCall
+
+extractRows :: DataFrame -> [Row]
+extractRows (DataFrame _ rows) = rows
