@@ -427,3 +427,34 @@ main = hspec $ do
     it "identifies ShowTable with a non-existent table" $ do
       let statement = Lib3.ShowTableStatement "nonexistent"
       Lib3.validateStatement statement sampleDatabase `shouldBe` (False, "Non existant columns or tables in statement or values dont match column")
+  
+  describe "getTableNames" $ do
+    it "extracts table name from a SELECT statement" $ do
+      let statement = Lib3.parseSql "SELECT * FROM employees e;"
+      case statement of
+        Right parsed -> Lib3.getTableNames parsed `shouldBe` ["employees"]
+        Left _ -> expectationFailure "Parsing failed"
+
+    it "extracts table name from an INSERT statement" $ do
+      let statement = Lib3.parseSql "INSERT INTO employees (id, name) VALUES (1, 'Alice');"
+      case statement of
+        Right parsed -> Lib3.getTableNames parsed `shouldBe` ["employees"]
+        Left _ -> expectationFailure "Parsing failed"
+
+    it "extracts table name from an UPDATE statement" $ do
+      let statement = Lib3.parseSql "UPDATE employees SET name = 'Bob' WHERE id = 2;"
+      case statement of
+        Right parsed -> Lib3.getTableNames parsed `shouldBe` ["employees"]
+        Left _ -> expectationFailure "Parsing failed"
+
+    it "extracts table name from a DELETE statement" $ do
+      let statement = Lib3.parseSql "DELETE FROM employees WHERE id = 1;"
+      case statement of
+        Right parsed -> Lib3.getTableNames parsed `shouldBe` ["employees"]
+        Left _ -> expectationFailure "Parsing failed"
+
+    it "returns an empty list for an invalid statement" $ do
+      let statement = Lib3.parseSql "This is not a SQL statement"
+      case statement of
+        Right parsed -> Lib3.getTableNames parsed `shouldBe` []
+        Left _ -> return () 

@@ -43,6 +43,7 @@ module Lib3
     SelectedColumns,
     generateDataFrame,
     getReturnTableRows,
+    getTableNames,
   )
 where
 
