@@ -552,7 +552,15 @@ validateTableAndColumns :: [TableName] -> Maybe [SelectColumn] -> [(TableName, D
 validateTableAndColumns tableNames cols tables = isJust cols && Data.List.all tableAndColumnsExist tableNames
   where
     justCols = fromMaybe [] cols
-    tableAndColumnsExist tableName = maybe False (columnsExistInTable justCols) (Data.List.lookup tableName tables)
+    tableAndColumnsExist :: TableName -> Bool
+    tableAndColumnsExist tableName = maybe False (columnsExistInTable (filter (selectColumnIsFromTable tableName) justCols)) (Data.List.lookup tableName tables)
+
+    selectColumnIsFromTable :: TableName -> SelectColumn -> Bool
+    selectColumnIsFromTable tableName (TableColumn tName _) = tName == tableName
+    selectColumnIsFromTable tableName (Avg tName _) = tName == tableName
+    selectColumnIsFromTable tableName (Max tName _) = tName == tableName
+    selectColumnIsFromTable _ Now = True
+
 
 columnsExistInTable :: [SelectColumn] -> DataFrame -> Bool
 columnsExistInTable columns df = Data.List.all (`columnExistsInDataFrame` df) columns
@@ -577,10 +585,12 @@ columnExistsInDataFrame Now _ = True
 getSelectedColumns :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> [Column]
 getSelectedColumns stmt tbls = case stmt of
     Lib3.SelectAll tableNames _ -> Data.List.concatMap (getTableColumns tbls) tableNames
-    Lib3.SelectColumns _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
+    Lib3.SelectColumns _ selectedColumns _ -> case getFilteredDataFrame (map snd tbls) selectedColumns of
+      Right df -> getDataFrameColumns df
+      Left _ -> []  -- mapMaybe (findColumn tbls) selectedColumns
     Lib3.SelectAggregate _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
     _ -> []
-
+  
 getTableColumns :: [(Lib3.TableName, DataFrame)] -> Lib3.TableName -> [Column]
 getTableColumns tbls tableName = case Data.List.lookup tableName tbls of
     Just (DataFrame columns _) -> columns
@@ -1464,10 +1474,14 @@ extractRows :: DataFrame -> [Row]
 extractRows (DataFrame _ rows) = rows
 
 extractSelectedColumnsRows :: [Lib3.TableName] -> [Lib3.SelectColumn] -> [(Lib3.TableName, DataFrame)] -> [Row]
-extractSelectedColumnsRows selectedTables selectedColumns tables =
-    concatMap extractRowsFromTable filteredTables
+extractSelectedColumnsRows selectedTables selectedColumns tables = getDataFrameRows filterdTablesJointDf
+    -- concatMap extractRowsFromTable filteredTables
     where
         filteredTables = filter (\(name, _) -> name `elem` selectedTables) tables
+
+        filterdTablesJointDf = case getFilteredDataFrame (map snd filteredTables) selectedColumns of
+          Right df -> df
+          Left _ -> DataFrame [] []
 
         extractRowsFromTable :: (Lib3.TableName, DataFrame) -> [Row]
         extractRowsFromTable (_, df) = map (extractSelectedCols df) (extractRows df)
@@ -1484,6 +1498,49 @@ extractSelectedColumnsRows selectedTables selectedColumns tables =
         lookupValue columnName df row = do
             colIndex <- findIndex (\(Column name _) -> name == columnName) (extractColumns df)
             Just (row !! colIndex)
+
+getFilteredDataFrame :: [DataFrame] -> [SelectColumn] -> Either ErrorMessage DataFrame
+getFilteredDataFrame dfs selectedCols = do
+  baseDf <- extractMultipleTableDataframe dfs
+  selectedColumnNames <- Right $ map columnNameFromSelectColumn selectedCols
+  columnNamesWithIndex <- Right $ zip [0, 1..] $ map getColumnName $ getDataFrameColumns baseDf
+  realColumns <- Right $ filter (\col -> getColumnName col `elem` selectedColumnNames) $ getDataFrameColumns baseDf
+  realColumnNamesWithIndex <- Right $ filter (\(_, name) -> name `elem` selectedColumnNames) columnNamesWithIndex
+  realColumnIndexes <- Right $ map fst realColumnNamesWithIndex
+  filteredRows <- filterRowsByIndex (getDataFrameRows baseDf) realColumnIndexes
+  return (DataFrame realColumns filteredRows)
+
+filterRowsByIndex :: [Row] -> [Integer] -> Either ErrorMessage [Row]
+filterRowsByIndex [] _ = Right []
+filterRowsByIndex [baseRow] idxs = do
+  fRow <- filterRow baseRow idxs
+  return [fRow]
+filterRowsByIndex (baseRow : xs) idxs = do
+  fRow <- filterRow baseRow idxs
+  rest <- filterRowsByIndex xs idxs
+  return $ fRow : rest
+
+filterRow :: Row -> [Integer] -> Either ErrorMessage Row
+filterRow row idxs = Right $ map snd $ filter (\(idx, _) -> idx `elem` idxs) (Data.List.zip [0, 1..] row)
+
+extractMultipleTableDataframe :: [DataFrame] -> Either ErrorMessage DataFrame
+extractMultipleTableDataframe [] = Left "No no tables provided"
+extractMultipleTableDataframe [df] = Right df
+extractMultipleTableDataframe ((DataFrame cols rows) : xs) = do
+  rest <- extractMultipleTableDataframe xs
+  return $ DataFrame (cols ++ getDataFrameColumns rest) (multiplyRows (getDataFrameRows rest) rows)
+
+multiplyRows :: [Row] -> [Row] -> [Row]
+multiplyRows [row] rowsToMultiply = map (++ row) rowsToMultiply
+multiplyRows (baseRow : xs) rowsToMultiply = map (++ baseRow) rowsToMultiply ++ multiplyRows xs rowsToMultiply
+multiplyRows _ _ = []
+
+
+getDataFrameColumns :: DataFrame -> [Column]
+getDataFrameColumns (DataFrame cols _) = cols
+
+getDataFrameRows :: DataFrame -> [Row]
+getDataFrameRows (DataFrame _ rows) = rows
 
 extractAggregateRows :: [Lib3.TableName] -> [Lib3.SelectColumn] -> Maybe Lib3.WhereClause -> [(Lib3.TableName, DataFrame)] -> [Row]
 extractAggregateRows tableNames aggFuncs whereClause tables =
