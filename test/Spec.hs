@@ -6,6 +6,7 @@ import Lib1
 import Lib2
 import qualified Lib3 
 import Test.Hspec
+import Data.Time (UTCTime, getCurrentTime)
 
 columnName :: Column -> String
 columnName (Column name _) = name
@@ -458,3 +459,40 @@ main = hspec $ do
       case statement of
         Right parsed -> Lib3.getTableNames parsed `shouldBe` []
         Left _ -> return () 
+  describe "getReturnTableRows" $ do
+    -- Define sample DataFrame and tables
+    let sampleDataFrame = DataFrame 
+          [ Column "id" IntegerType
+          , Column "name" StringType
+          , Column "surname" StringType
+          ]
+          [ [IntegerValue 1, StringValue "Vi", StringValue "Po"]
+          , [IntegerValue 2, StringValue "Ed", StringValue "Dl"]
+          ]
+    let sampleTable = ("employees", sampleDataFrame)
+    let sampleDatabase = [sampleTable]
+
+    it "returns all rows for a SelectAll statement" $ do
+      currentTime <- getCurrentTime
+      let statement = Lib3.SelectAll ["employees"] Nothing
+      let expectedRows = [[IntegerValue 1, StringValue "Vi", StringValue "Po"],
+                          [IntegerValue 2, StringValue "Ed", StringValue "Dl"]]
+      Lib3.getReturnTableRows statement sampleDatabase currentTime `shouldBe` expectedRows
+
+    it "returns selected columns for a SelectColumns statement" $ do
+      currentTime <- getCurrentTime
+      let statement = Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "name"] Nothing
+      let expectedRows = [[StringValue "Vi"], [StringValue "Ed"]]
+      Lib3.getReturnTableRows statement sampleDatabase currentTime `shouldBe` expectedRows
+
+    it "returns selected columns for a SelectColumns statement" $ do
+      currentTime <- getCurrentTime
+      let statement = Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "name"] Nothing
+      let expectedRows = [[StringValue "Vi"], [StringValue "Ed"]]
+      Lib3.getReturnTableRows statement sampleDatabase currentTime `shouldBe` expectedRows
+
+    it "returns aggregated value for a SelectAggregate statement" $ do
+      currentTime <- getCurrentTime
+      let statement = Lib3.SelectAggregate ["employees"] [Lib3.Max "employees" "id"] Nothing
+      let expectedRows = [[IntegerValue 2]] 
+      Lib3.getReturnTableRows statement sampleDatabase currentTime `shouldBe` expectedRows
