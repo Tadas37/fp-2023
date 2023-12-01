@@ -513,5 +513,30 @@ main = hspec $ do
         let insertStmt = Lib3.InsertStatement "nonexistent" (Just [Lib3.TableColumn "nonexistent" "id", Lib3.TableColumn "nonexistent" "name"]) [IntegerValue 2, StringValue "Bob"]
         evaluate (Lib3.insertRows insertStmt tables) `shouldThrow` anyErrorCall
 
+
+  describe "Lib3.deleteRows" $ do
+    let sampleDataFrame = DataFrame
+          [ Column "id" IntegerType
+          , Column "name" StringType
+          ]
+          [ [IntegerValue 1, StringValue "Alice"]
+          , [IntegerValue 2, StringValue "Bob"]
+          ]
+    let tables = [("employees", sampleDataFrame)]
+
+    it "deletes rows that match a specific condition" $ do
+      let deleteStmt = Lib3.DeleteStatement "employees" (Just (Lib3.Conditions [Lib3.Equals (Lib3.TableColumn "employees" "id") (Lib3.IntValue 1)]))
+      case Lib3.deleteRows deleteStmt tables of
+        Right (_, updatedDataFrame) -> do
+          let expectedRows = [[IntegerValue 2, StringValue "Bob"]]
+          extractRows updatedDataFrame `shouldBe` expectedRows
+        Left errMsg -> expectationFailure $ "Deletion failed: " ++ errMsg
+
+    it "does not delete any rows if the condition does not match" $ do
+      let deleteStmt = Lib3.DeleteStatement "employees" (Just (Lib3.Conditions [Lib3.Equals (Lib3.TableColumn "employees" "id") (Lib3.IntValue 3)]))
+      case Lib3.deleteRows deleteStmt tables of
+        Right _ -> expectationFailure "Expected an error but deletion succeeded."
+        Left errMsg -> errMsg `shouldBe` "Error: No rows deleted. None match the specified condition."
+
 extractRows :: DataFrame -> [Row]
 extractRows (DataFrame _ rows) = rows
