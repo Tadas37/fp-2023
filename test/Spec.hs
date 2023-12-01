@@ -359,3 +359,19 @@ main = hspec $ do
     it "extracts table name from ShowTableStatement correctly" $ do
       let statement = Lib3.ShowTableStatement "employees"
       Lib3.getNonSelectTableNameFromStatement statement `shouldBe` "employees"
+      
+  describe "GenerateDataFrame" $ do
+    it "should generate a DataFrame with the given columns and rows" $ do
+      let columns = [Column "id" IntegerType, Column "name" StringType]
+      let rows = [[IntegerValue 1, StringValue "Alice"], [IntegerValue 2, StringValue "Bob"]]
+      let result = Lib3.generateDataFrame columns rows
+      result `shouldBe` DataFrame columns rows
+
+    it "should allow manipulation of the generated DataFrame" $ do
+      let columns = [Column "id" IntegerType, Column "name" StringType]
+      let rows = [[IntegerValue 1, StringValue "Alice"], [IntegerValue 2, StringValue "Bob"]]
+      let expectedColumns = columns
+      let modifiedRows = [[IntegerValue 3, StringValue "Charlie"]]
+      let expectedResult = DataFrame expectedColumns modifiedRows
+      let result = Lib3.generateDataFrame columns modifiedRows
+      result `shouldBe` expectedResult

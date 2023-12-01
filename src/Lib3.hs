@@ -41,6 +41,8 @@ module Lib3
     getNonSelectTableNameFromStatement,
     parseSql,
     SelectedColumns,
+    generateDataFrame,
+    getReturnTableRows,
   )
 where
 
