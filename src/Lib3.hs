@@ -3,6 +3,9 @@
 
 module Lib3
   ( executeSql,
+    insertRows,
+    deleteRows,
+    updateRows,
     parseTables,
     Execution,
     ExecutionAlgebra(..),
@@ -12,7 +15,6 @@ module Lib3
     loadFiles,
     getTime,
     parseYAMLContent,
-    getTableDfByName,
     dataFrameToSerializedTable,
     serializeTableToYAML,
     validateStatement,
@@ -33,6 +35,17 @@ module Lib3
     Condition(..),
     ConditionValue(..),
     getSelectedColumns,
+    showTableFunction,
+    showTablesFunction,
+    getStatementType,
+    getTableDfByName,
+    StatementType(..),
+    getNonSelectTableNameFromStatement,
+    parseSql,
+    SelectedColumns,
+    generateDataFrame,
+    getReturnTableRows,
+    getTableNames,
   )
 where
 
