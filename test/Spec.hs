@@ -4,7 +4,7 @@ import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..))
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
-import Lib3(parseYAMLContent, serializeTableToYAML,getNonSelectTableNameFromStatement, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumns, ParsedStatement(..), TableName, SelectColumn(..), showTableFunction, showTablesFunction, getStatementType, getTableDfByName)
+import qualified Lib3 
 import Test.Hspec
 
 columnName :: Column -> String
@@ -237,7 +237,7 @@ main = hspec $ do
       executeStatement parsed `shouldBe` Left "One or more columns not found in table employees"
   describe "Lib3.parseYAMLContent" $ do
     it "correctly parses valid YAML content into a DataFrame" $ do
-      let result = parseYAMLContent validYAMLContent
+      let result = Lib3.parseYAMLContent validYAMLContent
       result `shouldSatisfy` isRight
       let (Right (tableName, DataFrame columns rows)) = result
       tableName `shouldBe` "employees"
@@ -245,16 +245,16 @@ main = hspec $ do
       length rows `shouldBe` 2    
   describe "Lib3.dataFrameToSerializedTable" $ do
     it "correctly converts a DataFrame to a SerializedTable" $ do
-      let serializedTable = dataFrameToSerializedTable ("employees", sampleDataFrame)
-      let SerializedTable {tableName = tn, columns = cols, rows = rws} = serializedTable
+      let serializedTable = Lib3.dataFrameToSerializedTable ("employees", sampleDataFrame)
+      let Lib3.SerializedTable {Lib3.tableName = tn, Lib3.columns = cols, Lib3.rows = rws} = serializedTable
       tn `shouldBe` "employees"
       length cols `shouldBe` 3
       length rws `shouldBe` 2
 
   describe "Lib3.serializeTableToYAML" $ do
     it "correctly serializes a SerializedTable to a YAML string" $ do
-      let serializedTable = dataFrameToSerializedTable ("employees", sampleDataFrame)
-      let yamlString = serializeTableToYAML serializedTable
+      let serializedTable = Lib3.dataFrameToSerializedTable ("employees", sampleDataFrame)
+      let yamlString = Lib3.serializeTableToYAML serializedTable
       yamlString `shouldContain` "tableName: employees"
       yamlString `shouldContain` "name: id"
       yamlString `shouldContain` "dataType: integer"
@@ -268,23 +268,23 @@ main = hspec $ do
   describe "getSelectedColumnsFunction" $ do
     it "selects all columns for SelectAll statement" $ do
       let stmt = Lib3.SelectAll ["employees"] Nothing
-      let selectedColumns = getSelectedColumns stmt sampleDatabase
+      let selectedColumns = Lib3.getSelectedColumns stmt sampleDatabase
       length selectedColumns `shouldBe` 2
 
     it "selects specified columns for SelectColumns statement" $ do
       let stmt = Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "id"] Nothing
-      let selectedColumns = getSelectedColumns stmt sampleDatabase
+      let selectedColumns = Lib3.getSelectedColumns stmt sampleDatabase
       length selectedColumns `shouldBe` 1
       (columnName . head) selectedColumns `shouldBe` "id"
 
     it "returns empty list for non-existent table" $ do
       let stmt = Lib3.SelectAll ["nonexistent"] Nothing
-      let selectedColumns = getSelectedColumns stmt sampleDatabase
+      let selectedColumns = Lib3.getSelectedColumns stmt sampleDatabase
       selectedColumns `shouldBe` []
 
     it "returns empty list for non-existent columns" $ do
       let stmt = Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "nonexistent"] Nothing
-      let selectedColumns = getSelectedColumns stmt sampleDatabase
+      let selectedColumns = Lib3.getSelectedColumns stmt sampleDatabase
       selectedColumns `shouldBe` []
 
   describe "Lib3.showTablesFunction" $ do
@@ -315,8 +315,47 @@ main = hspec $ do
     it "returns an error for a non-existent table name" $ do
       let result = Lib3.getTableDfByName "nonexistent" sampleDatabase
       result `shouldBe` Left "Table not found: nonexistent"
+  describe "parseSql" $ do
+    it "parses a valid SELECT statement with table alias" $ do
+      let query = "SELECT e.id FROM employees e;"
+      let expected = Right (Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "id"] Nothing)
+      Lib3.parseSql query `shouldBe` expected
+    
+    it "parses a valid DELETE statement" $ do
+      let query = "DELETE FROM employees WHERE id = 1;"
+      let expected = Right (Lib3.DeleteStatement "employees" (Just (Lib3.Conditions [Lib3.Equals (Lib3.TableColumn "employees" "id") (Lib3.IntValue 1)])))
+      Lib3.parseSql query `shouldBe` expected
 
+    it "parses a valid INSERT statement" $ do
+      let query = "INSERT INTO employees (id, name) VALUES (1, 'Alice');"
+      let expected = Right (Lib3.InsertStatement "employees" (Just [Lib3.TableColumn "employees" "id", Lib3.TableColumn "employees" "name"]) [IntegerValue 1, StringValue "Alice"])
+      Lib3.parseSql query `shouldBe` expected
+
+    it "parses a valid UPDATE statement" $ do
+      let query = "UPDATE employees SET name = 'Bob' WHERE id = 2;"
+      let expected = Right (Lib3.UpdateStatement "employees" [Lib3.TableColumn "employees" "name"] [StringValue "Bob"] (Just (Lib3.Conditions [Lib3.Equals (Lib3.TableColumn "employees" "id") (Lib3.IntValue 2)])))
+      Lib3.parseSql query `shouldBe` expected
+
+    it "parses a valid SHOW TABLES statement" $ do
+      let query = "SHOW TABLES;"
+      let expected = Right Lib3.ShowTablesStatement
+      Lib3.parseSql query `shouldBe` expected
+
+    it "parses a valid SHOW TABLE statement" $ do
+      let query = "SHOW TABLE employees;"
+      let expected = Right (Lib3.ShowTableStatement "employees")
+      Lib3.parseSql query `shouldBe` expected
+
+    it "handles invalid SQL syntax" $ do
+      let query = "SELECT FROM employees WHERE name = 'Alice';"
+      let expected = Left "Invalid table formating in statement. Maybe table abbreviation was not provided?"
+      Lib3.parseSql query `shouldBe` expected
+
+    it "handles incomplete SQL statements" $ do
+      let query = "SELECT id FROM employees WHERE name = ;"
+      let expected = Left "Invalid table formating in statement. Maybe table abbreviation was not provided?"
+      Lib3.parseSql query `shouldBe` expected
   describe "getNonSelectTableNameFromStatement" $ do
     it "extracts table name from ShowTableStatement correctly" $ do
-      let statement = ShowTableStatement "employees"
-      getNonSelectTableNameFromStatement statement `shouldBe` "employees"
+      let statement = Lib3.ShowTableStatement "employees"
+      Lib3.getNonSelectTableNameFromStatement statement `shouldBe` "employees"

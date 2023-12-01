@@ -39,6 +39,8 @@ module Lib3
     getTableDfByName,
     StatementType(..),
     getNonSelectTableNameFromStatement,
+    parseSql,
+    SelectedColumns,
   )
 where
 
