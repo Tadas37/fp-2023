@@ -18,9 +18,10 @@ module Lib3
     validateStatement,
     SerializedTable(..),
     updateRowsInTable,
+    updateRowValues,
     parseStatement,
     filterRows,
-    filterDataFrame,
+    deleteRowsFromDataFrame,
     rowSatisfiesWhereClause,
     conditionSatisfied,
     compareWithCondition,
@@ -571,13 +572,13 @@ getSelectedColumns stmt tbls = case stmt of
     Lib3.SelectColumns _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
     _ -> []
 
-getTableColumns :: [(Lib3.TableName, DataFrame)] -> Lib3.TableName -> [Column]
+getTableColumns :: [(TableName, DataFrame)] -> TableName -> [Column]
 getTableColumns tbls tableName = case Data.List.lookup tableName tbls of
     Just (DataFrame columns _) -> columns
     Nothing -> []
 
-findColumn :: [(Lib3.TableName, DataFrame)] -> Lib3.SelectColumn -> Maybe Column
-findColumn tbls (Lib3.TableColumn tblName colName) =
+findColumn :: [(TableName, DataFrame)] -> SelectColumn -> Maybe Column
+findColumn tbls (TableColumn tblName colName) =
     case Data.List.lookup tblName tbls of
         Just (DataFrame columns _) -> Data.List.find (\(Column name _) -> name == colName) columns
         Nothing -> Nothing
@@ -846,18 +847,29 @@ castEither defaultValue eitherValue = case eitherValue of
 
 getAggregateColumns :: [String] -> [(TableName, String)] -> Either ErrorMessage [SelectColumn]
 getAggregateColumns [baseColumn] tableNames = do
-  parsedAggregate <- parseAggregateColumn baseColumn tableNames
-  return [parsedAggregate]
+  let stripedColumn = if Data.List.last baseColumn == ',' then Data.List.init baseColumn else baseColumn
+  if stripedColumn == "now()"
+    then return [Now]
+    else do
+      parsedAggregate <- parseAggregateColumn stripedColumn tableNames
+      return [parsedAggregate]
 getAggregateColumns (baseColumn : xs) tableNames = do
-  baseAggregate <- parseAggregateColumn baseColumn tableNames
-  rest <- getAggregateColumns xs tableNames
-  return $ baseAggregate : rest
+  let stripedColumn = if Data.List.last baseColumn == ',' then Data.List.init baseColumn else baseColumn
+  if stripedColumn == "now()"
+    then do
+      rest <- getAggregateColumns xs tableNames
+      return $ Now : rest
+    else do
+      baseAggregate <- parseAggregateColumn baseColumn tableNames
+      rest <- getAggregateColumns xs tableNames
+      return $ baseAggregate : rest
 getAggregateColumns _ _ = Left "Error parsing aggregate columns"
 
 parseAggregateColumn :: String -> [(TableName, String)] -> Either ErrorMessage SelectColumn
 parseAggregateColumn column tableNames
   | isValid && "avg(" `Data.List.isPrefixOf` dropedCommaColumn && ")" `Data.List.isSuffixOf` dropedCommaColumn = Right $ Avg tableName columnName
   | isValid && "max(" `Data.List.isPrefixOf` dropedCommaColumn && ")" `Data.List.isSuffixOf` dropedCommaColumn = Right $ Max tableName columnName
+  | dropedCommaColumn == "now()" = Right Now
   | otherwise = Left $ "Failed to parse aggregate column " Data.List.++ column
     where
       dropedCommaColumn = if Data.List.last column == ',' then Data.List.init column else column
@@ -910,18 +922,27 @@ getColumnWithTableAb statement tableNames = do
 getCorrectTableAndColumns :: [(String, String)] -> [(String, String)] -> Either ErrorMessage [(String, String)]
 
 getCorrectTableAndColumns [columnAndTableAb] tableNames = do
-  tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
-  return [(tableName, snd columnAndTableAb)]
+  if columnAndTableAb == ("now()", "now()")
+    then 
+      return [("now()", "now()")]
+    else do
+      tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
+      return [(tableName, snd columnAndTableAb)]
 
 getCorrectTableAndColumns (columnAndTableAb : xs) tableNames = do
-  tableExists <- Right $ findIfTupleWithSndElemEqualToExists (fst columnAndTableAb) tableNames
-  if tableExists
+    if columnAndTableAb == ("now()", "now()")
     then do
-      tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
       rest <- getCorrectTableAndColumns xs tableNames
-      return $ (tableName, snd columnAndTableAb) : rest
-    else
-      Left "Error parsing column table abbreviations"
+      return $ ("now()", "now()") : rest
+    else do
+      tableExists <- Right $ findIfTupleWithSndElemEqualToExists (fst columnAndTableAb) tableNames
+      if tableExists
+        then do
+          tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
+          rest <- getCorrectTableAndColumns xs tableNames
+          return $ (tableName, snd columnAndTableAb) : rest
+        else
+          Left "Error parsing column table abbreviations"
 
 getCorrectTableAndColumns _ _ = Left "Something went wrong when trying to find match for table abbreviation"
 
@@ -941,9 +962,12 @@ getFstTupleElemBySndElemInList _ _ = Left "Failed to find valid table that match
 
 getListOfTableAbAndColumn :: [String] -> [String]
 getListOfTableAbAndColumn [] = []
-getListOfTableAbAndColumn [abAndColumn] = wordsWhen (== '.') abAndColumn
-getListOfTableAbAndColumn (abAndColumn : xs) = wordsWhen (== '.') abAndColumn Data.List.++ getListOfTableAbAndColumn xs
-
+getListOfTableAbAndColumn [originalAbAndColumn] = if abAndColumn == "now()" then ["now()", "now()"] else wordsWhen (== '.') abAndColumn
+  where 
+    abAndColumn = if Data.List.last originalAbAndColumn == ',' then init originalAbAndColumn else originalAbAndColumn 
+getListOfTableAbAndColumn (originalAbAndColumn : xs) = (if abAndColumn == "now()" then ["now()", "now()"] else wordsWhen (== '.') abAndColumn) Data.List.++ getListOfTableAbAndColumn xs
+  where 
+    abAndColumn = if Data.List.last originalAbAndColumn == ',' then init originalAbAndColumn else originalAbAndColumn 
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
 wordsWhen p s = case Data.List.dropWhile p s of
@@ -966,7 +990,7 @@ parseAggregate tableNames whereClause columns = Right $ SelectAggregate tableNam
 
 -- ignores commas in columns
 parseColumnsSelect :: [TableName] -> [(String, String)] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
-parseColumnsSelect tables columns whereClause = Right $ SelectColumns tables (Data.List.map (uncurry TableColumn) columns) whereClause
+parseColumnsSelect tables columns whereClause = Right $ SelectColumns tables (Data.List.map (\(tname, cname) -> if tname == "now()" && cname == "now()" then Now else TableColumn tname cname) columns) whereClause
 
 parseAllColumns :: [TableName] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
 parseAllColumns tableNames whereClause = Right $ SelectAll tableNames whereClause
@@ -989,8 +1013,9 @@ hasAllValidColumns [column] = isValidColumn column
 hasAllValidColumns (column : xs) = isValidColumn column && hasAllValidColumns xs
 
 isValidColumn :: String -> Bool
-isValidColumn column = isSplitByDot && isNotAggregate && hasNoParenthesies || column == "now()"
+isValidColumn column = isSplitByDot && isNotAggregate && hasNoParenthesies || removedComma == "now()"
   where
+    removedComma = if "," `Data.List.isSuffixOf` column then init column else column
     (beforeDot, afterDot) = Data.List.break (== '.') column
     isSplitByDot = not (Data.List.null beforeDot) && not (Data.List.null afterDot) && (Data.List.length afterDot > 1)
     isNotAggregate = not $ isAggregate column
@@ -1010,6 +1035,7 @@ hasAllValidAggregates (column : xs) = isAggregate column && hasAllValidAggregate
 isAggregate :: String -> Bool
 isAggregate column
   | ("max(" `Data.List.isPrefixOf` removedCommaColumn || "avg(" `Data.List.isPrefixOf` removedCommaColumn) && ")" `Data.List.isSuffixOf` removedCommaColumn && isValidColumn (Data.List.drop 4 (Data.List.init removedCommaColumn)) = True
+  | removedCommaColumn == "now()" = True
   | otherwise = False
     where
       removedCommaColumn = if Data.List.last column == ',' then Data.List.init column else column
@@ -1311,16 +1337,14 @@ columnNameFromCondition (NotEqual colName _) = extractColumnName colName
 
 extractColumnName :: SelectColumn -> String
 extractColumnName (TableColumn _ colName) = colName
-
 extractColumnName _ = error "Unsupported SelectColumn type for condition"
 
-
-filterDataFrame :: DataFrame -> WhereClause -> Either String DataFrame
-filterDataFrame (DataFrame cols rows) wc =
-    let filteredRows = Data.List.filter (rowSatisfiesWhereClause wc cols) rows
-    in if Data.List.null filteredRows
-       then Left "Error: No rows match the specified condition."
-       else Right $ DataFrame cols filteredRows
+deleteRowsFromDataFrame :: DataFrame -> WhereClause -> Either String DataFrame
+deleteRowsFromDataFrame (DataFrame cols rows) wc =
+    let nonMatchingRows = filter (not . rowSatisfiesWhereClause wc cols) rows
+    in if length nonMatchingRows == length rows
+       then Left "Error: No rows deleted. None match the specified condition."
+       else Right $ DataFrame cols nonMatchingRows
 
 rowSatisfiesWhereClause :: WhereClause -> [Column] -> Row -> Bool
 rowSatisfiesWhereClause (IsValueBool b _ columnName) cols row =
@@ -1431,6 +1455,31 @@ updateRowValues columns selectCols newRow row =
 
 -- ========================================================================
 -- End of Update
+
+updateRowsInTable :: TableName -> SelectedColumns -> Row -> Maybe WhereClause -> DataFrame -> Either ErrorMessage DataFrame
+updateRowsInTable tableName columns newRow maybeWhereClause (DataFrame dfColumns dfRows) =
+    Right $ DataFrame dfColumns (map updateRowIfRequired dfRows)
+  where
+    updateRowIfRequired row =
+        case maybeWhereClause of
+            Just whereClause ->
+                if rowSatisfiesWhereClause whereClause dfColumns row
+                then updateRowValues dfColumns columns newRow row
+                else row
+            Nothing -> updateRowValues dfColumns columns newRow row
+
+updateRowValues :: [Column] -> SelectedColumns -> Row -> Row -> Row
+updateRowValues columns selectCols newRow row = 
+    map updateValue (zip [0..] row)
+  where
+    colNames = map extractColumnName selectCols
+    colIndices = mapMaybe (`findColumnIndex` columns) colNames
+    newValueMap = zip colIndices newRow
+
+    updateValue (idx, value) = 
+        case lookup idx newValueMap of
+            Just newValue -> newValue
+            Nothing -> value
 
 extractColumnNames :: SelectedColumns -> [ColumnName]
 extractColumnNames = mapMaybe extractName

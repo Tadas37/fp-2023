@@ -91,7 +91,6 @@ runExecuteIO (Free step) = do
         writeFile (getTableFilePath tableName) yamlContent
         return next
 
-
 columnName :: DataFrame.Column -> String
 columnName (DataFrame.Column name _) = name 
 
