@@ -4,7 +4,7 @@ import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..))
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
-import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumns, ParsedStatement(..), TableName, SelectColumn(..))
+import Lib3(parseYAMLContent, serializeTableToYAML, dataFrameToSerializedTable, SerializedTable(..), getSelectedColumns, ParsedStatement(..), TableName, SelectColumn(..), showTableFunction, showTablesFunction)
 import Test.Hspec
 
 columnName :: Column -> String
@@ -289,5 +289,24 @@ main = hspec $ do
       let selectedColumns = getSelectedColumns stmt sampleDatabase
       selectedColumns `shouldBe` []
 
-
+  describe "Lib3.showTablesFunction" $ do
+    it "creates a DataFrame listing all table names" $ do
+      let tableNames = map fst sampleDatabase
+      let result = Lib3.showTablesFunction tableNames
+      let expectedColumns = [Column "tableName" StringType]
+      let expectedRows = map (\name -> [StringValue name]) tableNames
+      result `shouldBe` DataFrame expectedColumns expectedRows
+  
+  describe "Lib3.showTableFunction" $ do
+    it "creates a DataFrame listing column names of a given table" $ do
+      let result = Lib3.showTableFunction sampleDataFrame1
+      let expectedColumns = [Column "ColumnNames" StringType]
+      let expectedRows = [[StringValue "id"], [StringValue "name"]]
+      result `shouldBe` DataFrame expectedColumns expectedRows
+  
+    it "handles tables with no columns" $ do
+      let emptyTable = DataFrame [] []
+      let result = Lib3.showTableFunction emptyTable
+      result `shouldBe` DataFrame [Column "ColumnNames" StringType] []
+  
   

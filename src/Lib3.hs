@@ -34,6 +34,8 @@ module Lib3
     Condition(..),
     ConditionValue(..),
     getSelectedColumns,
+    showTableFunction,
+    showTablesFunction,
   )
 where
 
