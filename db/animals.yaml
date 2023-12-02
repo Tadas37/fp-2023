@@ -1,13 +1,11 @@
 tableName: animals
 columns:
-- name: id
+- name: animalId
   dataType: integer
 - name: animal
   dataType: string
-- name: masterName
-  dataType: string
-- name: masterSurname
-  dataType: string
+- name: masterId
+  dataType: integer
 rows:
-- [1, Cat, "Ja", "Ne"]
-- [2, Dog, "Jo", "Nas"]
+- [1, Cat, 2]
+- [2, Dog, 1]

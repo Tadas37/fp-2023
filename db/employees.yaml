@@ -1,11 +1,13 @@
 tableName: employees
 columns:
-- name: id
+- name: employeeId
   dataType: integer
 - name: name
   dataType: string
 - name: surname
   dataType: string
+- name: ownedAnimalId
+  dataType: integer
 rows:
-- [1, Vi, Po]
-- [2, Ed, Dl]
+- [1, Vi, Po, 2]
+- [2, Ed, Dl, 1]
