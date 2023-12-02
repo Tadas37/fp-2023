@@ -198,7 +198,7 @@ getTableNames (Lib3.DeleteStatement tableName _) = [tableName]
 getTableNames (Lib3.InsertStatement tableName _ _) = [tableName]
 getTableNames (Lib3.UpdateStatement tableName _ _ _) = [tableName]
 getTableNames (Lib3.ShowTableStatement tableName) = [tableName]
-getTableNames Lib3.ShowTablesStatement = ["employees", "employees1", "animals"]
+getTableNames Lib3.ShowTablesStatement = ["employees", "animals"]
 getTableNames (Lib3.Invalid _) = []
 
 deleteRows :: Lib3.ParsedStatement -> [(Lib3.TableName, DataFrame)] -> Either ErrorMessage (Lib3.TableName, DataFrame)
@@ -265,16 +265,19 @@ updateRows (Invalid _) _ = Left "Invalid statement cannot be processed in Update
 getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> [Row]
 getReturnTableRows parsedStatement tables _ =
     case parsedStatement of
-        SelectAll _ _ -> extractAllRows tables
-        SelectColumns tableNames conditions _ -> Lib3.extractSelectedColumnsRows tableNames conditions tables
+        SelectAll _ whereClauseAll -> filteredRows
+          where
+              filterdTablesJointDf = case extractMultipleTableDataframe (map snd tables) of
+                Right df -> df
+                Left _ -> DataFrame [] []
+
+              filteredRows = case whereClauseAll of
+                Just wc -> mapMaybe (\row -> if rowSatisfiesWhereClause wc (getDataFrameColumns filterdTablesJointDf) row then Just row else Nothing) (getDataFrameRows filterdTablesJointDf)
+                Nothing -> getDataFrameRows filterdTablesJointDf
+
+        SelectColumns tableNames conditions whereClause -> Lib3.extractSelectedColumnsRows tableNames conditions tables whereClause
         SelectAggregate tableNames aggFunc conditions -> Lib3.extractAggregateRows tableNames aggFunc conditions tables
         _ -> error "Unhandled statement type in getReturnTableRows"
-    where
-        extractAllRows :: [(TableName, DataFrame)] -> [Row]
-        extractAllRows = concatMap (dfRows . snd)
-
-        dfRows :: DataFrame -> [Row]
-        dfRows (DataFrame _ rows) = rows
 
 
 generateDataFrame :: [Column] -> [Row] -> DataFrame
@@ -1372,6 +1375,14 @@ conditionSatisfied (GreaterThanOrEqual colName condValue) (cols, row) =
     compareWithCondition (columnNameFromSelectColumn colName) cols row (>=) condValue
 conditionSatisfied (NotEqual colName condValue) (cols, row) =
     compareWithCondition (columnNameFromSelectColumn colName) cols row (/=) condValue
+conditionSatisfied (ColumnValuesEqual col1 col2) (cols, row) = (row !! realCol1Value) == (row !! realCol2Value)
+  where
+    realCol1Value = fromMaybe (-1) $ getColumnIndexByName (columnNameFromSelectColumn col1) cols
+    realCol2Value = fromMaybe (-1) $ getColumnIndexByName (columnNameFromSelectColumn col2) cols
+
+-- This fails when columns can have the same names in different tables
+getColumnIndexByName :: String -> [Column] -> Maybe Int
+getColumnIndexByName cName cols = elemIndex cName $ map (\(Column colName _) -> colName) cols
 
 columnNameFromSelectColumn :: SelectColumn -> String
 columnNameFromSelectColumn (TableColumn _ colName) = colName
@@ -1467,37 +1478,25 @@ compare (StringValue x) (StringValue y) = Prelude.compare x y
 compare (BoolValue x) (BoolValue y) = Prelude.compare x y
 compare _ _ = EQ
 
-extractColumns :: DataFrame -> [Column]
-extractColumns (DataFrame cols _) = cols
-
-extractRows :: DataFrame -> [Row]
-extractRows (DataFrame _ rows) = rows
-
-extractSelectedColumnsRows :: [Lib3.TableName] -> [Lib3.SelectColumn] -> [(Lib3.TableName, DataFrame)] -> [Row]
-extractSelectedColumnsRows selectedTables selectedColumns tables = getDataFrameRows filterdTablesJointDf
+extractSelectedColumnsRows :: [Lib3.TableName] -> [Lib3.SelectColumn] -> [(Lib3.TableName, DataFrame)] -> Maybe WhereClause -> [Row]
+extractSelectedColumnsRows selectedTables selectedColumns tables whereClause = filteredRows
     -- concatMap extractRowsFromTable filteredTables
     where
         filteredTables = filter (\(name, _) -> name `elem` selectedTables) tables
-
         filterdTablesJointDf = case getFilteredDataFrame (map snd filteredTables) selectedColumns of
           Right df -> df
           Left _ -> DataFrame [] []
 
-        extractRowsFromTable :: (Lib3.TableName, DataFrame) -> [Row]
-        extractRowsFromTable (_, df) = map (extractSelectedCols df) (extractRows df)
+        rawJointDataFrame = case extractMultipleTableDataframe (map snd filteredTables) of
+          Right rawDf -> rawDf
+          Left _ -> DataFrame [] []
 
-        extractSelectedCols :: DataFrame -> Row -> Row
-        extractSelectedCols df row = mapMaybe (extractColumn df row) selectedColumns
+        dataFrameRows = getDataFrameRows filterdTablesJointDf
+        rawRowsWithIndex = zip [0, 1..] $ getDataFrameRows rawJointDataFrame
 
-        extractColumn :: DataFrame -> Row -> Lib3.SelectColumn -> Maybe Value
-        extractColumn df row col = case col of
-            Lib3.TableColumn _ columnName -> lookupValue columnName df row
-            _ -> Nothing
-
-        lookupValue :: String -> DataFrame -> Row -> Maybe Value
-        lookupValue columnName df row = do
-            colIndex <- findIndex (\(Column name _) -> name == columnName) (extractColumns df)
-            Just (row !! colIndex)
+        filteredRows = case whereClause of
+          Just wc -> mapMaybe (\(idx, row) -> if rowSatisfiesWhereClause wc (getDataFrameColumns rawJointDataFrame) row then Just (dataFrameRows !! idx) else Nothing) rawRowsWithIndex
+          Nothing -> dataFrameRows
 
 getFilteredDataFrame :: [DataFrame] -> [SelectColumn] -> Either ErrorMessage DataFrame
 getFilteredDataFrame dfs selectedCols = do
@@ -1545,74 +1544,45 @@ getDataFrameRows (DataFrame _ rows) = rows
 extractAggregateRows :: [Lib3.TableName] -> [Lib3.SelectColumn] -> Maybe Lib3.WhereClause -> [(Lib3.TableName, DataFrame)] -> [Row]
 extractAggregateRows tableNames aggFuncs whereClause tables =
     let filteredTables = filter (\(name, _) -> name `elem` tableNames) tables
-        aggregatedRows = map (applyAggregateFunction aggFuncs filteredTables whereClause) aggFuncs
+        aggregatedRows = map (applyAggregateFunction filteredTables whereClause) aggFuncs
     in [concat aggregatedRows]
 
-applyAggregateFunction :: [Lib3.SelectColumn] -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Lib3.SelectColumn -> [Value]
-applyAggregateFunction _ tables whereClause aggFunc =
+applyAggregateFunction :: [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Lib3.SelectColumn -> [Value]
+applyAggregateFunction tables whereClause aggFunc =
     case aggFunc of
         Lib3.Max tableName colName -> [maxAggregate tableName colName tables whereClause]
         Lib3.Avg tableName colName -> [avgAggregate tableName colName tables whereClause]
         _ -> error "Unsupported aggregate function"
 
 maxAggregate :: Lib3.TableName -> String -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Value
-maxAggregate tableName colName tables whereClause =
-    let relevantRows = extractRelevantRows tableName colName tables whereClause
-        maxVal = maximum $ mapMaybe unwrapInteger relevantRows
+maxAggregate _ colName tables whereClause =
+    let tableDf = case extractMultipleTableDataframe (map snd tables) of
+          Right df -> df
+          Left _ -> DataFrame [] [] 
+        filteredRows = case whereClause of
+          Just wc -> mapMaybe (\row -> if rowSatisfiesWhereClause wc (getDataFrameColumns tableDf) row then Just row else Nothing) (getDataFrameRows tableDf)
+          Nothing -> getDataFrameRows tableDf
+
+        rowIndex = fromMaybe (-1) $ getColumnIndexByName colName (getDataFrameColumns tableDf)
+        filteredValues = map (!! rowIndex) filteredRows
+        maxVal = maximum $ mapMaybe unwrapInteger filteredValues
     in IntegerValue maxVal
 
+
 avgAggregate :: Lib3.TableName -> String -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> Value
-avgAggregate tableName colName tables whereClause =
-    let relevantRows = extractRelevantRows tableName colName tables whereClause
-        values = mapMaybe unwrapInteger relevantRows
+avgAggregate _ colName tables whereClause =
+    let tableDf = case extractMultipleTableDataframe (map snd tables) of
+          Right df -> df
+          Left _ -> DataFrame [] [] 
+        filteredRows = case whereClause of
+          Just wc -> mapMaybe (\row -> if rowSatisfiesWhereClause wc (getDataFrameColumns tableDf) row then Just row else Nothing) (getDataFrameRows tableDf)
+          Nothing -> getDataFrameRows tableDf
+
+        rowIndex = fromMaybe (-1) $ getColumnIndexByName colName (getDataFrameColumns tableDf)
+        filteredValues = map (!! rowIndex) filteredRows
+        values = mapMaybe unwrapInteger filteredValues
         avgVal = sum values `div` fromIntegral (length values)
     in IntegerValue avgVal
-
-extractRelevantRows :: Lib3.TableName -> String -> [(Lib3.TableName, DataFrame)] -> Maybe Lib3.WhereClause -> [Value]
-extractRelevantRows tableName colName tables whereClause =
-    let maybeTable = lookup tableName tables
-        maybeColumnIndex = maybeTable >>= \df -> findColumnIndex colName (extractColumns df)
-    in case (maybeTable, maybeColumnIndex) of
-        (Just df, Just colIndex) -> filterRowsByWhereClause df colIndex whereClause
-        _ -> []
-
-filterRowsByWhereClause :: DataFrame -> Int -> Maybe Lib3.WhereClause -> [Value]
-filterRowsByWhereClause (DataFrame columns rows) colIndex whereClause =
-    case whereClause of
-        Just wc -> map (!! colIndex) $ filter (rowSatisfiesWhereClause1 wc columns) rows
-        Nothing -> map (!! colIndex) rows
-
-rowSatisfiesWhereClause1 :: Lib3.WhereClause -> [Column] -> Row -> Bool
-rowSatisfiesWhereClause1 (Lib3.Conditions conditions) columns row =
-  all (`conditionSatisfiedInRow` (columns, row)) conditions
-rowSatisfiesWhereClause1 (Lib3.IsValueBool b _ columnName) columns row =
-      case findColumnIndex columnName columns of
-          Just idx -> case row !! idx of
-              BoolValue val -> val == b
-              _ -> False
-          Nothing -> False
-
-conditionSatisfiedInRow :: Lib3.Condition -> ([Column], Row) -> Bool
-conditionSatisfiedInRow (Lib3.Equals colName condValue) = evaluateCondition (==) colName condValue
-conditionSatisfiedInRow (Lib3.GreaterThan colName condValue) = evaluateCondition (>) colName condValue
-conditionSatisfiedInRow (Lib3.LessThan colName condValue) = evaluateCondition (<) colName condValue
-conditionSatisfiedInRow (Lib3.LessthanOrEqual colName condValue) = evaluateCondition (<=) colName condValue
-conditionSatisfiedInRow (Lib3.GreaterThanOrEqual colName condValue) = evaluateCondition (>=) colName condValue
-conditionSatisfiedInRow (Lib3.NotEqual colName condValue) = evaluateCondition (/=) colName condValue
-
-evaluateCondition :: (Value -> Value -> Bool) -> Lib3.SelectColumn -> Lib3.ConditionValue -> ([Column], Row) -> Bool
-evaluateCondition op (Lib3.TableColumn _ colName) condValue (columns, row) =
-    case findColumnIndex colName columns of
-        Just idx -> compareConditionValue (row !! idx) op (convertConditionValue condValue)
-        Nothing -> False
-evaluateCondition _ _ _ _ = False
-
-compareConditionValue :: Value -> (Value -> Value -> Bool) -> Value -> Bool
-compareConditionValue val1 op val2 = val1 `op` val2
-
-convertConditionValue :: Lib3.ConditionValue -> Value
-convertConditionValue (Lib3.IntValue i) = IntegerValue i
-convertConditionValue (Lib3.StrValue s) = StringValue s
 
 unwrapInteger :: Value -> Maybe Integer
 unwrapInteger (IntegerValue i) = Just i
