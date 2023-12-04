@@ -4,11 +4,12 @@ import DataFrame (Column (..), ColumnType (..), DataFrame (..), Value (..), Row(
 import InMemoryTables qualified as D
 import Lib1
 import Lib2
-import qualified Lib3 
+import qualified Lib3
 import Test.Hspec
 import Data.Time (UTCTime, getCurrentTime)
 import qualified Lib3
 import Control.Exception (evaluate, catch)
+import Control.Monad.Free
 
 columnName :: Column -> String
 columnName (Column name _) = name
@@ -28,7 +29,7 @@ sampleDataFrame2 = DataFrame
   []
 
 sampleDatabase :: [(Lib3.TableName, DataFrame)]
-sampleDatabase = 
+sampleDatabase =
   [ ("employees", sampleDataFrame1)
   , ("customers", sampleDataFrame2)
   ]
@@ -45,7 +46,7 @@ sampleDataFrame = DataFrame
 
 
 validYAMLContent :: String
-validYAMLContent = 
+validYAMLContent =
   "tableName: employees\n" ++
   "columns:\n" ++
   "  - name: id\n" ++
@@ -58,8 +59,86 @@ validYAMLContent =
   "  - [1, \"Vi\", \"Po\"]\n" ++
   "  - [2, \"Ed\", \"Dl\"]"
 
+employeesTable :: String
+employeesTable =
+  "tableName: employees\n" ++
+  "columns:\n" ++
+  "  - name: employeeId\n" ++
+  "    dataType: integer\n" ++
+  "  - name: name\n" ++
+  "    dataType: string\n" ++
+  "  - name: surname\n" ++
+  "    dataType: string\n" ++
+  "  - name: ownedAnimalId\n" ++
+  "    dataType: integer\n" ++
+  "rows:\n" ++
+  "  - [1, Vi, Po, 2]\n" ++
+  "  - [2, Ed, Dl, 1]"
+
+animalsTable :: String
+animalsTable =
+  "tableName: animals\n" ++
+  "columns:\n" ++
+  "  - name: animalId\n" ++
+  "    dataType: integer\n" ++
+  "  - name: animal\n" ++
+  "    dataType: string\n" ++
+  "  - name: masterId\n" ++
+  "    dataType: integer\n" ++
+  "rows:\n" ++
+  "  - [1, Cat, 2]\n" ++
+  "  - [2, Dog, 1]\n"
+
+testDataBase = [("employees", employeesTable), ("animals", animalsTable)]
+
+runExecuteIO :: Lib3.Execution r -> IO r
+runExecuteIO (Pure r) = return r
+runExecuteIO (Free step) = do
+    next <- runStep step
+    runExecuteIO next
+  where
+    runStep :: Lib3.ExecutionAlgebra a -> IO a
+    runStep (Lib3.GetTime next) = mockGetCurrentTime >>= return . next
+    runStep (Lib3.LoadFiles tableNames next) = do
+      let tablesExist = all (\name -> name `elem` map fst testDataBase) tableNames
+      if tablesExist
+        then do
+          fileContents <- return $ map getTableData tableNames
+          return $ next $ Right fileContents
+        else
+          return $ next $ Left "One or more provided tables does not exist"
+
+    runStep (Lib3.UpdateTable (tableName, df) next) = do
+        return next
+
+mockGetCurrentTime :: IO UTCTime
+mockGetCurrentTime = return $ read "2016-04-01 9:00:00 UTC"
+
+getTableData :: String -> String
+getTableData tName = case lookup tName testDataBase of
+  Just table -> table
+  Nothing -> "I am sad"
+
 main :: IO ()
 main = hspec $ do
+  it "inserts data without specifying columns" $ do
+    res <- runExecuteIO $ Lib3.executeSql "INSERT INTO employees (employeeId, name, surname) values (3, 'name', 'surname');"
+    res `shouldBe` Right (DataFrame [Column "employeeId" IntegerType, Column "name" StringType, Column "surname" StringType, Column "ownedAnimalId" IntegerType] [[IntegerValue 1, StringValue "Vi", StringValue "Po", IntegerValue 2], [IntegerValue 2, StringValue "Ed", StringValue "Dl", IntegerValue 1], [IntegerValue 3, StringValue "name", StringValue "surname", NullValue]])
+  it "inserts data into specified columns" $ do
+    res <- runExecuteIO  $ Lib3.executeSql "INSERT INTO employees (name) values ('name');"
+    res `shouldBe` Right (DataFrame [Column "employeeId" IntegerType, Column "name" StringType, Column "surname" StringType, Column "ownedAnimalId" IntegerType] [[IntegerValue 1, StringValue "Vi", StringValue "Po", IntegerValue 2], [IntegerValue 2, StringValue "Ed", StringValue "Dl", IntegerValue 1], [NullValue, StringValue "name", NullValue, NullValue]]) 
+  it "updates data without a where clause" $ do
+    res <- runExecuteIO  $ Lib3.executeSql "UPDATE employees SET employeeId = 0;"
+    res `shouldBe` Right (DataFrame [Column "employeeId" IntegerType, Column "name" StringType, Column "surname" StringType, Column "ownedAnimalId" IntegerType] [[IntegerValue 0, StringValue "Vi", StringValue "Po", IntegerValue 2], [IntegerValue 0, StringValue "Ed", StringValue "Dl", IntegerValue 1]])
+  it "updates data with a where clause" $ do
+    res <- runExecuteIO $ Lib3.executeSql "UPDATE employees SET name = 'new' where employeeId = 1;"
+    res `shouldBe` Right (DataFrame [Column "employeeId" IntegerType, Column "name" StringType, Column "surname" StringType, Column "ownedAnimalId" IntegerType] [[IntegerValue 1, StringValue "new", StringValue "Po", IntegerValue 2], [IntegerValue 2, StringValue "Ed", StringValue "Dl", IntegerValue 1]])
+  it "deletes all rows if there is no where clause" $ do
+    res <- runExecuteIO $ Lib3.executeSql "DELETE FROM employees;"
+    res `shouldBe` Right (DataFrame [Column "employeeId" IntegerType, Column "name" StringType, Column "surname" StringType, Column "ownedAnimalId" IntegerType] [])
+  it "deletes data with a where clause" $ do
+    res <- runExecuteIO $ Lib3.executeSql "DELETE FROM employees where name = 'Vi';"
+    res `shouldBe` Right (DataFrame [Column "employeeId" IntegerType, Column "name" StringType, Column "surname" StringType, Column "ownedAnimalId" IntegerType] [[IntegerValue 2, StringValue "Ed", StringValue "Dl", IntegerValue 1]])
   describe "Lib1.findTableByName" $ do
     it "handles empty lists" $ do
       Lib1.findTableByName [] "" `shouldBe` Nothing
@@ -163,7 +242,7 @@ main = hspec $ do
 
     it "shouldn't parse 'selEct MaX(flag) From flags wheRe value iS tRuewad;'" $ do
       parseStatement "selEct MaX(flag) From flags wheRe value iS tRuewad;" `shouldBe` Left "Unsupported or invalid statement"
-    
+
     it "shouldn't parse 'selEct MaX(flag) From flags wheRe valEZ iS tRuewad;'" $ do
       parseStatement "selEct MaX(flag) From flags wheRe value iS tRuewad;" `shouldBe` Left "Unsupported or invalid statement"
 
@@ -197,10 +276,10 @@ main = hspec $ do
       parseStatement "select flag from flags where 2 < flag;" `shouldBe` Left "Unsupported or invalid statement"
 
     it "shouldn't parse statements with incomplete where and" $ do
-      parseStatement "select id, name from employees where name < 'vi' and;" `shouldBe` Left "Unsupported or invalid statement"   
-      parseStatement "select id, name from employees where name <;" `shouldBe` Left "Unsupported or invalid statement"   
-      parseStatement "select id, name from employees where name;" `shouldBe` Left "Unsupported or invalid statement"  
-      parseStatement "select id, name from employees wher;" `shouldBe` Left "Unsupported or invalid statement"  
+      parseStatement "select id, name from employees where name < 'vi' and;" `shouldBe` Left "Unsupported or invalid statement"
+      parseStatement "select id, name from employees where name <;" `shouldBe` Left "Unsupported or invalid statement"
+      parseStatement "select id, name from employees where name;" `shouldBe` Left "Unsupported or invalid statement"
+      parseStatement "select id, name from employees wher;" `shouldBe` Left "Unsupported or invalid statement"
 
 
   describe "executeStatement for SHOW TABLES in Lib2" $ do
@@ -244,8 +323,8 @@ main = hspec $ do
       result `shouldSatisfy` isRight
       let (Right (tableName, DataFrame columns rows)) = result
       tableName `shouldBe` "employees"
-      length columns `shouldBe` 3 
-      length rows `shouldBe` 2    
+      length columns `shouldBe` 3
+      length rows `shouldBe` 2
   describe "Lib3.dataFrameToSerializedTable" $ do
     it "correctly converts a DataFrame to a SerializedTable" $ do
       let serializedTable = Lib3.dataFrameToSerializedTable ("employees", sampleDataFrame)
@@ -297,14 +376,14 @@ main = hspec $ do
       let expectedColumns = [Column "tableName" StringType]
       let expectedRows = map (\name -> [StringValue name]) tableNames
       result `shouldBe` DataFrame expectedColumns expectedRows
-  
+
   describe "Lib3.showTableFunction" $ do
     it "creates a DataFrame listing column names of a given table" $ do
       let result = Lib3.showTableFunction sampleDataFrame1
       let expectedColumns = [Column "ColumnNames" StringType]
       let expectedRows = [[StringValue "id"], [StringValue "name"]]
       result `shouldBe` DataFrame expectedColumns expectedRows
-  
+
     it "handles tables with no columns" $ do
       let emptyTable = DataFrame [] []
       let result = Lib3.showTableFunction emptyTable
@@ -323,7 +402,7 @@ main = hspec $ do
       let query = "SELECT e.id FROM employees e;"
       let expected = Right (Lib3.SelectColumns ["employees"] [Lib3.TableColumn "employees" "id"] Nothing)
       Lib3.parseSql query `shouldBe` expected
-    
+
     it "parses a valid DELETE statement" $ do
       let query = "DELETE FROM employees WHERE id = 1;"
       let expected = Right (Lib3.DeleteStatement "employees" (Just (Lib3.Conditions [Lib3.Equals (Lib3.TableColumn "employees" "id") (Lib3.IntValue 1)])))
@@ -362,7 +441,7 @@ main = hspec $ do
     it "extracts table name from ShowTableStatement correctly" $ do
       let statement = Lib3.ShowTableStatement "employees"
       Lib3.getNonSelectTableNameFromStatement statement `shouldBe` "employees"
-      
+
   describe "GenerateDataFrame" $ do
     it "should generate a DataFrame with the given columns and rows" $ do
       let columns = [Column "id" IntegerType, Column "name" StringType]
@@ -430,7 +509,7 @@ main = hspec $ do
     it "identifies ShowTable with a non-existent table" $ do
       let statement = Lib3.ShowTableStatement "nonexistent"
       Lib3.validateStatement statement sampleDatabase `shouldBe` (False, "Non existant columns or tables in statement or values dont match column")
-  
+
   describe "getTableNames" $ do
     it "extracts table name from a SELECT statement" $ do
       let statement = Lib3.parseSql "SELECT * FROM employees e;"
@@ -460,9 +539,9 @@ main = hspec $ do
       let statement = Lib3.parseSql "This is not a SQL statement"
       case statement of
         Right parsed -> Lib3.getTableNames parsed `shouldBe` []
-        Left _ -> return () 
+        Left _ -> return ()
   describe "getReturnTableRows" $ do
-    let sampleDataFrame = DataFrame 
+    let sampleDataFrame = DataFrame
           [ Column "id" IntegerType
           , Column "name" StringType
           , Column "surname" StringType
@@ -495,9 +574,9 @@ main = hspec $ do
     it "returns aggregated value for a SelectAggregate statement" $ do
       currentTime <- getCurrentTime
       let statement = Lib3.SelectAggregate ["employees"] [Lib3.Max "employees" "id"] Nothing
-      let expectedRows = [[IntegerValue 2]] 
+      let expectedRows = [[IntegerValue 2]]
       Lib3.getReturnTableRows statement sampleDatabase currentTime `shouldBe` expectedRows
- 
+
   describe "insertRows" $ do
     let sampleDataFrame = DataFrame [Column "id" IntegerType, Column "name" StringType] [[IntegerValue 1, StringValue "Alice"]]
     let tables = [("employees", sampleDataFrame)]
@@ -540,7 +619,7 @@ main = hspec $ do
 
   describe "updateRows" $ do
     -- Setup sample DataFrame and tables
-    let sampleDataFrame = DataFrame 
+    let sampleDataFrame = DataFrame
           [ Column "id" IntegerType
           , Column "name" StringType
           , Column "age" IntegerType
