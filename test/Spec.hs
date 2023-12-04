@@ -58,6 +58,66 @@ validYAMLContent =
   "  - [1, \"Vi\", \"Po\"]\n" ++
   "  - [2, \"Ed\", \"Dl\"]"
 
+employeesTable :: String
+employeesTable =
+  "tableName: employees\n" ++
+  "columns:\n" ++
+  "  - name: employeeId\n" ++
+  "    dataType: integer\n" ++
+  "  - name: name\n" ++
+  "    dataType: string\n" ++
+  "  - name: surname\n" ++
+  "    dataType: string\n" ++
+  "  - name: ownedAnimalId\n" ++
+  "    dataType: integer\n" ++
+  "rows:\n" ++
+  "  - [1, Vi, Po, 2]\n" ++
+  "  - [2, Ed, Dl, 1]"
+
+animalsTable :: String
+animalsTable = 
+  "tableName: animals\n" ++
+  "columns:\n" ++
+  "  - name: animalId\n" ++
+  "    dataType: integer\n" ++
+  "  - name: animal\n" ++
+  "    dataType: string\n" ++
+  "  - name: masterId\n" ++
+  "    dataType: integer\n" ++
+  "rows:\n" ++
+  "  - [1, Cat, 2]\n" ++
+  "  - [2, Dog, 1]\n"
+
+testDataBase = [("employees", employeesTable), ("animals", animalsTable)]
+
+runExecuteIO :: Lib3.Execution r -> IO r
+runExecuteIO (Pure r) = return r
+runExecuteIO (Free step) = do
+    next <- runStep step
+    runExecuteIO next
+  where
+    runStep :: Lib3.ExecutionAlgebra a -> IO a
+    runStep (Lib3.GetTime next) = mockGetCurrentTime >>= return . next
+    runStep (Lib3.LoadFiles tableNames next) = do
+      tablesExist <- IO $ all (\name -> name `elem` (map fst testData) tableNames)
+      if tablesExist
+        then do
+          fileContents <- mapM getTableData tableNames
+          return $ next $ Right fileContents
+        else
+          return $ next $ Left "One or more provided tables does not exist"
+
+    runStep (Lib3.UpdateTable (tableName, df) next) = do
+        return next
+
+mockGetCurrentTime :: IO UTCTime
+mockGetCurrentTime = return $ read "2016-04-01 9:00:00 UTC"
+
+getTableData :: String -> String
+getTableData tName = case lookup tName testDataBase of
+  Just table -> table
+  Nothing -> "I am sad" 
+
 main :: IO ()
 main = hspec $ do
   describe "Lib1.findTableByName" $ do
