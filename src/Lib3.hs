@@ -309,64 +309,57 @@ showTableFunction (DataFrame columns _) =
                           (map (\(Column colName _) -> [StringValue colName]) columns)
     in newDf
 
-
 executeSql :: SQLQuery -> Execution (Either ErrorMessage DataFrame)
-executeSql statement =
-  case parseSql statement of
+executeSql statement = do
+    parsedResult <- return (parseSql statement)
+    case parsedResult of
         Left err -> return $ Left err
         Right parsedStatement -> do
-          let tableNames = getTableNames parsedStatement
-          tableFiles <- loadFiles tableNames
-          case tableFiles of
-            Left err -> return $ Left err
-            Right content ->
-              case parseTables content of
-                Left parseErr -> return $ Left parseErr
-                Right tables -> do
-                  let statementType = getStatementType statement
-                  timeStamp     <- getTime
-                  let (isValid, errorMessage) = validateStatement parsedStatement tables
-                  if not isValid
-                    then return $ Left errorMessage
-                    else
-                    case statementType of
-                      Select -> do
-                        let columns = getSelectedColumns parsedStatement tables
-                        let rows = getReturnTableRows parsedStatement tables timeStamp
-                        let df = generateDataFrame columns rows
-                        return $ Right df
-                      Delete -> do
-                        let deleteRow = deleteRows parsedStatement tables
-                        case deleteRow of
-                            Right (name, df) -> do
-                              updateTable (name, df)
-                              return $ Right df
-                            Left errMsg -> return $ Left errMsg
-                      Insert -> do
-                        let (name, df) = insertRows parsedStatement tables
-                        updateTable (name, df)
-                        return $ Right df
-                      Update -> do
-                        let updatedTable = updateRows parsedStatement tables
-                        case updatedTable of
-                            Right (name, df) -> do
-                                updateTable (name, df)
-                                return $ Right df
-                            Left errMsg -> return $ Left errMsg
-                      ShowTables -> do
-                        let allTables = showTablesFunction tableNames
-                        return $ Right allTables
-                      ShowTable -> executeShowTable parsedStatement tables
-                      InvalidStatement -> return $ Left "Invalid statement"
-          where
-executeShowTable :: ParsedStatement -> [(TableName, DataFrame)] -> Execution (Either ErrorMessage DataFrame)
-executeShowTable parsedStatement tables = do
-  let nonSelectTableName = getNonSelectTableNameFromStatement parsedStatement
-  case getTableDfByName nonSelectTableName tables of
-    Left errMsg -> return $ Left errMsg
-    Right df -> do
-      let allTables = showTableFunction df
-      return $ Right allTables
+            tableFiles <- loadFiles (getTableNames parsedStatement)
+            case tableFiles of
+                Left err -> return $ Left err
+                Right content -> do
+                    parsedTables <- return (parseTables content)
+                    case parsedTables of
+                        Left parseErr -> return $ Left parseErr
+                        Right tables -> do
+                            let statementType = getStatementType statement
+                            timeStamp <- getTime
+                            let (isValid, errorMessage) = validateStatement parsedStatement tables
+                            if not isValid
+                                then return $ Left errorMessage
+                                else case statementType of
+                                    Select -> do
+                                        let rows = getReturnTableRows parsedStatement tables timeStamp
+                                        let columns = getSelectedColumns parsedStatement tables
+                                        let df = generateDataFrame columns rows
+                                        return $ Right df
+                                    Delete -> do
+                                        let deleteResult = deleteRows parsedStatement tables
+                                        case deleteResult of
+                                            Right (name, df) -> do
+                                                updateTable (name, df)
+                                                return $ Right df
+                                            Left errMsg -> return $ Left errMsg
+                                    Insert -> do
+                                        let (name, df) = insertRows parsedStatement tables
+                                        updateTable (name, df)
+                                        return $ Right df
+                                    Update -> do
+                                        let updateResult = updateRows parsedStatement tables
+                                        case updateResult of
+                                            Right (name, df) -> do
+                                                updateTable (name, df)
+                                                return $ Right df
+                                            Left errMsg -> return $ Left errMsg
+                                    ShowTables -> return $ Right (showTablesFunction (getTableNames parsedStatement))
+                                    ShowTable -> do
+                                        let tableName = getNonSelectTableNameFromStatement parsedStatement
+                                        case getTableDfByName tableName tables of
+                                            Left errMsg -> return $ Left errMsg
+                                            Right df -> return $ Right (showTableFunction df)
+                                    InvalidStatement -> return $ Left "Invalid statement"
+
 
 getNonSelectTableNameFromStatement :: ParsedStatement -> TableName
 getNonSelectTableNameFromStatement (ShowTableStatement tableName) = tableName
