@@ -16,10 +16,10 @@ import Lib3 qualified
 import Data.Functor
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.Free (Free(..))
-import System.Directory (listDirectory, doesFileExist)
+import System.Directory (listDirectory, doesFileExist, removeFile)
 import System.FilePath (dropExtension, pathSeparator, takeExtension)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVarIO, modifyTVar', readTVar, newTVar)
-import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM (readTVar, atomically)
 import Control.Concurrent (threadDelay, forkIO)
 import Data.Either (partitionEithers)
 import Data.List (intercalate, find)
@@ -96,6 +96,14 @@ runExecuteIO dbRef (Free step) = do
   where
     runStep :: Lib3.ExecutionAlgebra a -> IO a
     runStep (Lib3.GetTime next) = getCurrentTime <&> next
+    runStep (Lib3.RemoveTable tableName next) = do
+        t <- findTable dbRef tableName -- Corrected: Added dbRef
+        case t of
+          Nothing -> return $ next $ Just $ "Table '" ++ tableName ++ "' does not exist."
+          Just ref -> do
+            atomically $ modifyTVar' dbRef (filter (/= ref)) -- Corrected the usage of modifyTVar'
+            removeFile $ getTableFilePath tableName
+            return $ next Nothing
     runStep (Lib3.LoadFiles tableNames next) = do
       tablesExist <- filesExist (map getTableFilePath tableNames)
       if tablesExist
@@ -108,7 +116,6 @@ runExecuteIO dbRef (Free step) = do
       tableVar <- findOrCreateTable dbRef tableName
       atomically $ modifyTVar' tableVar (\(_, _) -> (tableName, df))
       return next
-
 findOrCreateTable :: ConcurrentDb -> TableName -> IO ConcurrentTable
 findOrCreateTable dbRef tableName = do
   tables <- atomically $ readTVar dbRef
