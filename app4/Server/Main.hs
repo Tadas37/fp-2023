@@ -97,11 +97,11 @@ runExecuteIO dbRef (Free step) = do
     runStep :: Lib3.ExecutionAlgebra a -> IO a
     runStep (Lib3.GetTime next) = getCurrentTime <&> next
     runStep (Lib3.RemoveTable tableName next) = do
-        t <- findTable dbRef tableName -- Corrected: Added dbRef
+        t <- findTable dbRef tableName
         case t of
           Nothing -> return $ next $ Just $ "Table '" ++ tableName ++ "' does not exist."
           Just ref -> do
-            atomically $ modifyTVar' dbRef (filter (/= ref)) -- Corrected the usage of modifyTVar'
+            atomically $ modifyTVar' dbRef (filter (/= ref))
             removeFile $ getTableFilePath tableName
             return $ next Nothing
     runStep (Lib3.LoadFiles tableNames next) = do
