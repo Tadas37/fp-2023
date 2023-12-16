@@ -46,7 +46,7 @@ library:
   - text
   - aeson
   - bytestring
-
+  - stm
 executables:
   fp2023-select-all:
     main:                Main.hs
@@ -91,7 +91,46 @@ executables:
     - aeson
     - bytestring
     - directory
-
+  fp2023-sql-server:
+    main:                Main.hs
+    source-dirs:         app4/Server
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - fp2023
+    - extra
+    - repline
+    - terminal-size
+    - Spock
+    - http-types
+    - text
+    - mtl
+    - aeson
+    - time
+    - free
+    - filepath
+    - stm
+    - directory
+  fp2023-sql-client:
+    main:                Main.hs
+    source-dirs:         app4/client
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - fp2023
+    - extra
+    - repline
+    - terminal-size
+    - wreq
+    - aeson
+    - lens
+    - bytestring
+    - http-client
+    - stm
 tests:
   fp2023-test:
     main:                Spec.hs

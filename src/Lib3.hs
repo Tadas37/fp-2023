@@ -169,6 +169,7 @@ data ExecutionAlgebra next
   = LoadFiles [TableName] (Either ErrorMessage [FileContent] -> next)
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
+  | RemoveTable TableName (Maybe ErrorMessage -> next)
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
@@ -181,6 +182,9 @@ updateTable table = liftF $ UpdateTable table ()
 
 getTime :: Execution UTCTime
 getTime = liftF $ GetTime id
+
+removeTable :: TableName -> Execution (Maybe ErrorMessage)
+removeTable tableName = liftF $ RemoveTable tableName id
 
 parseTables :: [FileContent] -> Either String [(TableName, DataFrame)]
 parseTables contents =
