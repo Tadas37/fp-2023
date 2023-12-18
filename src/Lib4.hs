@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Lib4
   ( executeSql,
@@ -50,7 +51,7 @@ module Lib4
 where
 
 import Control.Monad.Free (Free (..), liftF)
-
+import Control.Monad.State
 import DataFrame (Column(..), ColumnType(..), Value(..), Row, DataFrame(..))
 import Data.Yaml (decodeEither')
 import Data.Text as T ( unpack, pack )
@@ -130,9 +131,9 @@ type SelectedColumns = [SelectColumn]
 type SelectedTables = [TableName]
 
 data ParsedStatement
-  = SelectAll SelectedTables (Maybe WhereClause) (Maybe SortClause)
-  | SelectAggregate SelectedTables SelectedColumns (Maybe WhereClause) (Maybe SortClause)
-  | SelectColumns SelectedTables SelectedColumns (Maybe WhereClause) (Maybe SortClause)
+  = SelectAll SelectedTables (Maybe WhereClause) 
+  | SelectAggregate SelectedTables SelectedColumns (Maybe WhereClause) 
+  | SelectColumns SelectedTables SelectedColumns (Maybe WhereClause) 
   | DeleteStatement TableName (Maybe WhereClause) 
   | InsertStatement TableName (Maybe SelectedColumns) Row
   | UpdateStatement TableName SelectedColumns Row (Maybe WhereClause)
@@ -163,12 +164,27 @@ data ConditionValue
   | IntValue Integer
   deriving (Show, Eq)
 
-data SortClause
-  = ColumnSort [ColumnName] (Maybe SortOrder)
+newtype EitherT e m a = EitherT {
+    runEitherT :: m (Either e a)
+}
 
-data SortOrder
-  = Asc
-  | Desc
+instance Functor m => Functor (EitherT e m) where
+  fmap f (EitherT m) = EitherT $ fmap (fmap f) m
+
+instance Applicative m => Applicative (EitherT e m) where
+  pure x = EitherT $ pure (Right x)
+  (EitherT f) <*> (EitherT x) = EitherT $ (<*>) <$> f <*> x
+
+instance Monad m => Monad (EitherT e m) where
+  return = pure
+  (EitherT x) >>= f = EitherT $ do
+    result <- x
+    case result of
+      Left e -> return (Left e)
+      Right y -> runEitherT (f y)
+
+
+type ParsedStatementT a = EitherT ErrorMessage (State [String]) a 
 
 data SelectType = Aggregate | ColumnsAndTime | AllColumns
 
@@ -635,44 +651,60 @@ findColumnInTable tbls tblName colName =
 
 -- SQL PARSER
 
-parseStatement :: String  -> Either ErrorMessage ParsedStatement
+-- paima value
+runParser :: ParsedStatementT a -> [String] -> Either ErrorMessage a
+runParser parser input = 
+    let res = runState (runEitherT parser) input
+    in case res of
+        (Left err, _) -> Left err
+        (Right value, remainingInput) -> Right value
+
+parseStatement :: String -> Either ErrorMessage ParsedStatement
 parseStatement input
   | Data.List.last input /= ';' = Left "Missing semicolon at end of statement"
-  | otherwise = mapStatementType wordsInput
+  | otherwise = case eitherResult of 
+    Left er -> Left er
+    Right st -> Right st
   where
     cleanedInput = Data.List.init input
     wordsInput = parseSemiCaseSensitive cleanedInput
+    parseResult = mapStatementType
+    eitherResult = runParser parseResult wordsInput
 
-mapStatementType :: [String] -> Either ErrorMessage ParsedStatement
-mapStatementType statement = do
-  statementType <- guessStatementType statement
+mapStatementType :: ParsedStatementT ParsedStatement
+mapStatementType = do
+  statement <- lift get
+  statementType <- guessStatementType
   case statementType of
-      Select -> parseSelect (Data.List.drop 1 statement)
-      Insert -> parseInsert statement
-      Delete -> parseDelete statement
-      Update -> parseUpdate statement
-      ShowTable -> parseShowTable statement
-      ShowTables -> parseShowTables statement
-      InvalidStatement -> Left "Invalid statement type"
+      Select -> do
+        lift $ put $ (drop 1 statement)
+        parseSelect
+      Insert -> parseInsert
+      Delete -> parseDelete
+      Update -> parseUpdate
+      ShowTable -> parseShowTable
+      ShowTables -> parseShowTables
+      InvalidStatement -> EitherT $ return $ Left "Invalid statement type"
 
-guessStatementType :: [String] -> Either ErrorMessage StatementType
-guessStatementType (x : y : _)
-  | x == "select" = Right Select
-  | x == "insert" && y == "into" = Right Insert
-  | x == "delete" && y == "from" = Right Delete
-  | x == "update" = Right Update
-  | x == "show" && y == "table" = Right ShowTable
-  | x == "show" && y == "tables" = Right ShowTables
-  | otherwise = Left "Sql statement does not resemble any sort of implemented statement"
+guessStatementType :: ParsedStatementT StatementType
+guessStatementType = do
+  statement <- lift get
+  case statement of
+    ("select" : _) -> return Select
+    ("insert" : "into" : _) -> return Insert
+    ("delete" : "from" : _) -> return Delete
+    ("update" : _) -> return Update
+    ("show" : "table" : _) -> return ShowTable
+    ("show" : "tables" : _) -> return ShowTables
+    _ -> EitherT $ return $ Left "Sql statement does not resemble any sort of implemented statement"
 
-guessStatementType _ = Left "Sql statement does not resemble any sort of implemented statement"
-
-parseInsert :: [String] -> Either ErrorMessage ParsedStatement
-parseInsert statement = do
+parseInsert :: ParsedStatementT ParsedStatement
+parseInsert = do
+  statement <- lift get
   tableName <- getInsertTableName statement
   getInsertColumns statement tableName
 
-getInsertTableName :: [String] -> Either ErrorMessage TableName
+getInsertTableName :: ParsedStatementT TableName
 getInsertTableName statement = do
   (_, intoAndAfter) <- Right $ Data.List.break (== "into") statement
   tableToInsertInto <- Right $ Data.List.drop 1 intoAndAfter
@@ -745,7 +777,7 @@ cleanInsertCommas (column : xs) = do
 
 cleanInsertCommas _ = Left "Unknown error parsing columns in insert statement"
 
-parseDelete :: [String] -> Either ErrorMessage ParsedStatement
+parseDelete :: ParsedStatementT ParsedStatement
 parseDelete statement = do
   tableName <- getTableNameFromDelete statement
   (_, fromWhere) <- Right $ Data.List.break (== "where") statement
@@ -764,7 +796,7 @@ getTableNameFromDelete statement = do
       else Right $ Data.List.last fromToWhere
 
 
-parseUpdate :: [String] -> Either ErrorMessage ParsedStatement
+parseUpdate :: ParsedStatementT ParsedStatement
 parseUpdate statement = do
   (_, afterWhere) <- Right $ Data.List.break (== "where") statement
   tableName <- getUpdateTableName statement
@@ -845,11 +877,11 @@ getUpdateStatement :: TableName -> [SelectColumn] -> Row -> Maybe WhereClause ->
 getUpdateStatement tableName selectedColumns rows whereClause = Right $ UpdateStatement tableName selectedColumns rows whereClause
 
 
-parseShowTables :: [String] -> Either ErrorMessage ParsedStatement
+parseShowTables :: ParsedStatementT ParsedStatement
 parseShowTables ["show", "tables"] = Right ShowTablesStatement
 parseShowTables _ = Left "Failed to parse SHOW TABLES statement"
 
-parseShowTable :: [String] -> Either ErrorMessage ParsedStatement
+parseShowTable :: ParsedStatementT ParsedStatement
 parseShowTable ["show", "table", tableName] = if isValidTable tableName
   then do
     return $ ShowTableStatement tableName
@@ -863,20 +895,21 @@ isValidTable originalName
   | "'" `Data.List.isPrefixOf` originalName || "'" `Data.List.isSuffixOf` originalName || "avg(" `Data.List.isPrefixOf` originalName || "max(" `Data.List.isPrefixOf` originalName || ")" `Data.List.isSuffixOf` originalName = False
   | otherwise = True
 
-parseSelect :: [String] -> Either ErrorMessage ParsedStatement
-parseSelect statement = do
-  tableNamesAndAb <- getTableNamesAndAb statement
-  (beforeWhere, afterWhere) <- Right $ Data.List.break (== "where") statement
-  (beforeFrom, _) <- Right $ Data.List.break (== "from") beforeWhere
+parseSelect :: ParsedStatementT ParsedStatement
+parseSelect = do
+  statement <- lift get
+  tableNamesAndAb <- getTableNamesAndAb
+  (beforeWhere, afterWhere) <- return $ Data.List.break (== "where") statement
+  (beforeFrom, _) <- return $ Data.List.break (== "from") beforeWhere
   whereClause <- statementClause afterWhere tableNamesAndAb
   selectType <- getSelectType beforeFrom
-  tableNames <- Right $ Data.List.map fst tableNamesAndAb
+  tableNames <- return $ Data.List.map fst tableNamesAndAb
   case selectType of
     Aggregate -> do
       aggregateColumns <- getAggregateColumns beforeFrom tableNamesAndAb
       parseAggregate tableNames whereClause aggregateColumns
     ColumnsAndTime -> do
-      columnsWithTableAb <- getColumnWithTableAb statement tableNamesAndAb
+      columnsWithTableAb <- getColumnWithTableAb tableNamesAndAb
       parseColumnsSelect tableNames columnsWithTableAb whereClause
     AllColumns -> parseAllColumns tableNames whereClause
 
@@ -885,7 +918,7 @@ castEither defaultValue eitherValue = case eitherValue of
   Right val -> val
   Left _ -> defaultValue
 
-getAggregateColumns :: [String] -> [(TableName, String)] -> Either ErrorMessage [SelectColumn]
+getAggregateColumns :: [String] -> [(TableName, String)] -> ParsedStatementT [SelectColumn]
 getAggregateColumns [baseColumn] tableNames = do
   let stripedColumn = if Data.List.last baseColumn == ',' then Data.List.init baseColumn else baseColumn
   if stripedColumn == "now()"
@@ -903,14 +936,14 @@ getAggregateColumns (baseColumn : xs) tableNames = do
       baseAggregate <- parseAggregateColumn baseColumn tableNames
       rest <- getAggregateColumns xs tableNames
       return $ baseAggregate : rest
-getAggregateColumns _ _ = Left "Error parsing aggregate columns"
+getAggregateColumns _ _ = EitherT $ return $ Left "Error parsing aggregate columns"
 
-parseAggregateColumn :: String -> [(TableName, String)] -> Either ErrorMessage SelectColumn
+parseAggregateColumn :: String -> [(TableName, String)] -> ParsedStatementT SelectColumn
 parseAggregateColumn column tableNames
-  | isValid && "avg(" `Data.List.isPrefixOf` dropedCommaColumn && ")" `Data.List.isSuffixOf` dropedCommaColumn = Right $ Avg tableName columnName
-  | isValid && "max(" `Data.List.isPrefixOf` dropedCommaColumn && ")" `Data.List.isSuffixOf` dropedCommaColumn = Right $ Max tableName columnName
-  | dropedCommaColumn == "now()" = Right Now
-  | otherwise = Left $ "Failed to parse aggregate column " Data.List.++ column
+  | isValid && "avg(" `Data.List.isPrefixOf` dropedCommaColumn && ")" `Data.List.isSuffixOf` dropedCommaColumn = return $ Avg tableName columnName
+  | isValid && "max(" `Data.List.isPrefixOf` dropedCommaColumn && ")" `Data.List.isSuffixOf` dropedCommaColumn = return $ Max tableName columnName
+  | dropedCommaColumn == "now()" = return Now
+  | otherwise = EitherT $ return $ Left $ "Failed to parse aggregate column " Data.List.++ column
     where
       dropedCommaColumn = if Data.List.last column == ',' then Data.List.init column else column
       removedAggregate = if Data.List.last column == ',' then Data.List.init (Data.List.drop 4 (Data.List.init column)) else Data.List.drop 4 (Data.List.init column)
@@ -926,9 +959,10 @@ findIfTupleWithSndElemEqualToExists val [(_, sndVal)] = val == sndVal
 findIfTupleWithSndElemEqualToExists val ((_, sndVal) : xs) = val == sndVal || findIfTupleWithSndElemEqualToExists val xs
 
 
-getTableNamesAndAb :: [String] -> Either ErrorMessage [(TableName, String)]
-getTableNamesAndAb statement = names
-  where
+getTableNamesAndAb :: ParsedStatementT [(TableName, String)]
+getTableNamesAndAb = do
+  statement <- lift get
+  let
     (_, afterFrom) = Data.List.break (== "from") statement
     (tables, _) = Data.List.break (== "where") afterFrom
     dropedTable = Data.List.drop 1 tables
@@ -942,47 +976,57 @@ getTableNamesAndAb statement = names
     names
       | even len && len > 0 && valuesListLike abbs = tuplesWithoutCommaAtEndOfAbb
       | otherwise = Left "Invalid table formating in statement. Maybe table abbreviation was not provided?"
+  case names of
+    Right n -> return n
+    Left err -> EitherT $ return $ Left err
 
 valuesListLike :: [String] -> Bool
 valuesListLike [val] = Data.List.last val /= ','
 valuesListLike (x : xs) = Data.List.last x == ',' && valuesListLike xs
 valuesListLike [] = False
 
-getColumnWithTableAb :: [String] -> [(TableName, String)] -> Either ErrorMessage [(String, String)]
-getColumnWithTableAb statement tableNames = do
-  (beforeFrom, _) <- Right $ Data.List.break (== "from") statement
-  columnAndAbList <- Right $ getListOfTableAbAndColumn beforeFrom
-  isValidColumnNames <- Right $ Data.List.all isValidColumn beforeFrom
+getColumnWithTableAb :: [(TableName, String)] -> ParsedStatementT [(String, String)]
+getColumnWithTableAb tableNames = do
+  statement <- lift get
+  (beforeFrom, _) <- return $ Data.List.break (== "from") statement
+  columnAndAbList <- return $ getListOfTableAbAndColumn beforeFrom
+  isValidColumnNames <- return $ Data.List.all isValidColumn beforeFrom
   if Data.List.null columnAndAbList || odd (Data.List.length columnAndAbList) || not isValidColumnNames
-    then Left "error parsing columns. Maybe table name abbreviation was not provided?"
+    then EitherT $ return $ Left "error parsing columns. Maybe table name abbreviation was not provided?"
     else do
-      splitList <- splitIntoTuples columnAndAbList
-      getCorrectTableAndColumns splitList tableNames
+      let splitList = splitIntoTuples columnAndAbList
+      case splitList of
+        Right sl -> getCorrectTableAndColumns sl tableNames
+        Left err -> EitherT $ return $ Left err
 
-getCorrectTableAndColumns :: [(String, String)] -> [(String, String)] -> Either ErrorMessage [(String, String)]
-
+getCorrectTableAndColumns :: [(String, String)] -> [(String, String)] -> ParsedStatementT [(String, String)]
 getCorrectTableAndColumns [columnAndTableAb] tableNames = if columnAndTableAb == ("now()", "now()")
   then
     return [("now()", "now()")]
   else do
-    tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
-    return [(tableName, snd columnAndTableAb)]
+    let tableName = getFstTupleElemBySndElemInList columnAndTableAb tableNames
+    case tableName of
+      Right tn -> return [(tn, snd columnAndTableAb)]
+      Left err -> EitherT $ return $ Left err
 
 getCorrectTableAndColumns (columnAndTableAb : xs) tableNames = if columnAndTableAb == ("now()", "now()")
 then do
   rest <- getCorrectTableAndColumns xs tableNames
   return $ ("now()", "now()") : rest
 else do
-  tableExists <- Right $ findIfTupleWithSndElemEqualToExists (fst columnAndTableAb) tableNames
+  tableExists <- return $ findIfTupleWithSndElemEqualToExists (fst columnAndTableAb) tableNames
   if tableExists
     then do
-      tableName <- getFstTupleElemBySndElemInList columnAndTableAb tableNames
-      rest <- getCorrectTableAndColumns xs tableNames
-      return $ (tableName, snd columnAndTableAb) : rest
+      let tableName = getFstTupleElemBySndElemInList columnAndTableAb tableNames
+      case tableName of 
+        Right tn -> do
+          rest <- getCorrectTableAndColumns xs tableNames
+          return $ (tn, snd columnAndTableAb) : rest
+        Left err -> EitherT $ return $ Left err
     else
-      Left "Error parsing column table abbreviations"
+      EitherT $ return $ Left "Error parsing column table abbreviations"
 
-getCorrectTableAndColumns _ _ = Left "Something went wrong when trying to find match for table abbreviation"
+getCorrectTableAndColumns _ _ = EitherT $ return $ Left "Something went wrong when trying to find match for table abbreviation"
 
 getFstTupleElemBySndElemInList :: Eq a => (a, b) -> [(c, a)] -> Either ErrorMessage c
 
@@ -1023,22 +1067,22 @@ splitIntoTuples (x : y : xs) = do
 
 splitIntoTuples _ = Left "Error parsing tables or columns. Maybe table abbreviation was not provided?"
 
-parseAggregate :: [TableName] -> Maybe WhereClause -> [SelectColumn] -> Either ErrorMessage ParsedStatement
-parseAggregate tableNames whereClause columns = Right $ SelectAggregate tableNames columns whereClause
+parseAggregate :: [TableName] -> Maybe WhereClause -> [SelectColumn] -> ParsedStatementT ParsedStatement
+parseAggregate tableNames whereClause columns = return $ SelectAggregate tableNames columns whereClause
 
 -- ignores commas in columns
-parseColumnsSelect :: [TableName] -> [(String, String)] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
-parseColumnsSelect tables columns whereClause = Right $ SelectColumns tables (Data.List.map (\(tname, cname) -> if tname == "now()" && cname == "now()" then Now else TableColumn tname cname) columns) whereClause
+parseColumnsSelect :: [TableName] -> [(String, String)] -> Maybe WhereClause -> ParsedStatementT ParsedStatement
+parseColumnsSelect tables columns whereClause = return $ SelectColumns tables (Data.List.map (\(tname, cname) -> if tname == "now()" && cname == "now()" then Now else TableColumn tname cname) columns) whereClause
 
-parseAllColumns :: [TableName] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
-parseAllColumns tableNames whereClause = Right $ SelectAll tableNames whereClause
+parseAllColumns :: [TableName] -> Maybe WhereClause -> ParsedStatementT ParsedStatement
+parseAllColumns tableNames whereClause = return $ SelectAll tableNames whereClause
 
-getSelectType :: [String] -> Either ErrorMessage SelectType
+getSelectType :: [String] -> ParsedStatementT SelectType
 getSelectType selectColumns
-  | hasAllValidAggregates selectColumns = Right Aggregate
-  | hasAllValidColumns selectColumns = Right ColumnsAndTime
-  | isValidSelectAll selectColumns = Right AllColumns
-  | otherwise = Left "Error parsing select type. Maybe invalid table abbreviation was used or an invalid query was given"
+  | hasAllValidAggregates selectColumns = return Aggregate
+  | hasAllValidColumns selectColumns = return ColumnsAndTime
+  | isValidSelectAll selectColumns = return AllColumns
+  | otherwise = EitherT $ return $ Left "Error parsing select type. Maybe invalid table abbreviation was used or an invalid query was given"
 
 isValidSelectAll :: [String] -> Bool
 isValidSelectAll selectColumns
@@ -1077,20 +1121,20 @@ isAggregate column
   | otherwise = False
     where
       removedCommaColumn = if Data.List.last column == ',' then Data.List.init column else column
-statementClause :: [String] -> [(TableName, String)] -> Either ErrorMessage (Maybe WhereClause)
+statementClause :: [String] -> [(TableName, String)] -> ParsedStatementT (Maybe WhereClause)
 statementClause afterWhere tableNames = case Data.List.length afterWhere of
-  0 -> Right Nothing
+  0 -> return Nothing
   _ -> tryParseWhereClause afterWhere tableNames
 
-tryParseWhereClause :: [String] -> [(TableName, String)] -> Either ErrorMessage (Maybe WhereClause)
+tryParseWhereClause :: [String] -> [(TableName, String)] -> ParsedStatementT (Maybe WhereClause)
 tryParseWhereClause afterWhere tableNames
   | isBoolIsTrueFalseClauseLike = case splitStatementToWhereIsClause (Data.List.drop 1 afterWhere) tableNames of
-    Left err -> Left err
-    Right clause -> Right $ Just clause
+    Left err -> EitherT $ return $ Left err
+    Right clause -> return $ Just clause
   | isAndClauseLike = case parseWhereAnd (Data.List.drop 1 afterWhere) tableNames of
-    Left err -> Left err
-    Right clause -> Right $ Just clause
-  | otherwise = Left "Failed to parse where clause. Where clause type not implemented or recognised. Please only use `where and` and `where bool is true/false`"
+    Left err -> EitherT $ return $ Left err
+    Right clause -> return $ Just clause
+  | otherwise = EitherT $ return $ Left "Failed to parse where clause. Where clause type not implemented or recognised. Please only use `where and` and `where bool is true/false`"
   where
     afterWhereWithoutWhere = Data.List.drop 1 afterWhere
     (_, afterIs) = Data.List.break (== "is") afterWhereWithoutWhere
