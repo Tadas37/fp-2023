@@ -30,6 +30,7 @@ library
       Lib1
       Lib2
       Lib3
+      Lib4
       Shared
   other-modules:
       Paths_fp2023

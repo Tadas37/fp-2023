@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module Lib4
   ( executeSql,
@@ -97,6 +98,9 @@ type ErrorMessage = String
 type SQLQuery = String
 type ColumnName = String
 
+deriving instance Show ParsedStatement
+deriving instance Eq ParsedStatement
+
 data SerializedTable = SerializedTable
   { tableName :: TableName
   , columns   :: [SerializedColumn]
@@ -164,11 +168,9 @@ data ConditionValue
   deriving (Show, Eq)
 
 data SortClause
-  = ColumnSort [ColumnName] (Maybe SortOrder)
+  = ColumnSort [ColumnName] (Maybe SortOrder) 
 
-data SortOrder
-  = Asc
-  | Desc
+data SortOrder = Asc | Desc deriving (Show, Eq)
 
 data SelectType = Aggregate | ColumnsAndTime | AllColumns
 
@@ -328,8 +330,12 @@ executeSql statement = do
     either (return . Left) handleParsedStatement parsedResult
   where
     handleParsedStatement parsedStatement = do
-        tableFiles <- loadFiles (getTableNames parsedStatement)
-        either (return . Left) (processTableFiles parsedStatement) tableFiles
+        case parsedStatement of
+            CreateTableStatement _ _ -> executeCreateTable parsedStatement
+            DropTableStatement _ -> executeDropTable parsedStatement
+            _ -> do
+                tableFiles <- loadFiles (getTableNames parsedStatement)
+                either (return . Left) (processTableFiles parsedStatement) tableFiles
 
     processTableFiles parsedStatement content = do
         let parsedTables = parseTables content
@@ -350,6 +356,18 @@ executeSql statement = do
                 ShowTables -> executeShowTables parsedStatement
                 ShowTable -> executeShowTable parsedStatement tables
                 InvalidStatement -> return $ Left "Invalid statement"
+
+    executeCreateTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
+    executeCreateTable (CreateTableStatement tableName columns) = do
+        result <- createTable tableName columns
+        return $ either Left (const $ Right emptyDataFrame) result
+    executeCreateTable _ = return $ Left "Invalid CREATE TABLE statement"
+
+    executeDropTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
+    executeDropTable (DropTableStatement tableName) = do
+        result <- dropTable tableName
+        return $ either Left (const $ Right emptyDataFrame) result
+    executeDropTable _ = return $ Left "Invalid DROP TABLE statement"
 
     executeSelect parsedStatement tables timeStamp = do
         let rows = getReturnTableRows parsedStatement tables timeStamp
@@ -380,6 +398,15 @@ executeSql statement = do
 getNonSelectTableNameFromStatement :: ParsedStatement -> TableName
 getNonSelectTableNameFromStatement (ShowTableStatement tableName) = tableName
 getNonSelectTableNameFromStatement _ = error "Non-select statement expected"
+
+emptyDataFrame :: DataFrame
+emptyDataFrame = DataFrame [] []
+
+createTable :: TableName -> [Column] -> Execution (Maybe ErrorMessage)
+createTable tableName columns = liftF $ CreateTable tableName columns id
+
+dropTable :: TableName -> Execution (Maybe ErrorMessage)
+dropTable tableName = liftF $ DropTable tableName id
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content =

@@ -12,7 +12,7 @@ import Network.HTTP.Types.Status
 import DataFrame (DataFrame(..), Column(..))
 import InMemoryTables (TableName)
 import Data.Time (UTCTime, getCurrentTime)
-import Lib3 qualified
+import Lib4 qualified
 import Data.Functor
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.Free (Free(..))
@@ -49,7 +49,7 @@ app :: SpockM () () AppState ()
 app = post root $ do
   appState <- getState
   mreq <- jsonBody' :: ApiAction SqlRequest
-  result <- liftIO $ runExecuteIO (db appState) (Lib3.executeSql (query mreq))
+  result <- liftIO $ runExecuteIO (db appState) (Lib4.executeSql (query mreq))
   case result of
     Left err -> do
       setStatus badRequest400
@@ -69,7 +69,7 @@ loadDb :: IO [(TableName, DataFrame)]
 loadDb = do
   tableNames <- getDbTables
   contents <- mapM (readFile . getTableFilePath) tableNames
-  case Lib3.parseTables contents of
+  case Lib4.parseTables contents of
     Left err -> do
       putStrLn $ "Error loading tables: " ++ err
       return []
@@ -84,19 +84,19 @@ syncDb dbVar = forever $ do
 syncTable :: ConcurrentTable -> IO ()
 syncTable tableVar = do
   (tableName, tableData) <- atomically $ readTVar tableVar
-  let serializedTable = Lib3.dataFrameToSerializedTable (tableName, tableData)
-  let serializedYAML = Lib3.serializeTableToYAML serializedTable
+  let serializedTable = Lib4.dataFrameToSerializedTable (tableName, tableData)
+  let serializedYAML = Lib4.serializeTableToYAML serializedTable
   writeFile (getTableFilePath tableName) serializedYAML
 
-runExecuteIO :: ConcurrentDb -> Lib3.Execution r -> IO r
+runExecuteIO :: ConcurrentDb -> Lib4.Execution r -> IO r
 runExecuteIO dbRef (Pure r) = return r
 runExecuteIO dbRef (Free step) = do
   next <- runStep step
   runExecuteIO dbRef next
   where
-    runStep :: Lib3.ExecutionAlgebra a -> IO a
-    runStep (Lib3.GetTime next) = getCurrentTime <&> next
-    runStep (Lib3.RemoveTable tableName next) = do
+    runStep :: Lib4.ExecutionAlgebra a -> IO a
+    runStep (Lib4.GetTime next) = getCurrentTime <&> next
+    runStep (Lib4.RemoveTable tableName next) = do
         t <- findTable dbRef tableName
         case t of
           Nothing -> return $ next $ Just $ "Table '" ++ tableName ++ "' does not exist."
@@ -104,7 +104,7 @@ runExecuteIO dbRef (Free step) = do
             atomically $ modifyTVar' dbRef (filter (/= ref))
             removeFile $ getTableFilePath tableName
             return $ next Nothing
-    runStep (Lib3.LoadFiles tableNames next) = do
+    runStep (Lib4.LoadFiles tableNames next) = do
       tablesExist <- filesExist (map getTableFilePath tableNames)
       if tablesExist
         then do
@@ -112,7 +112,20 @@ runExecuteIO dbRef (Free step) = do
           return $ next $ Right fileContents
         else
           return $ next $ Left "One or more provided tables does not exist"
-    runStep (Lib3.UpdateTable (tableName, df) next) = do
+    runStep (Lib4.DropTable tableName next) = do
+      t <- findTable dbRef tableName
+      case t of
+        Nothing -> return $ next $ Just $ "Table '" ++ tableName ++ "' does not exist."
+        Just ref -> do
+          atomically $ modifyTVar' dbRef (filter (/= ref))
+          removeFile $ getTableFilePath tableName
+          return $ next Nothing
+    runStep (Lib4.CreateTable tableName columns next) = do
+      let newTable = DataFrame columns [] 
+      tableVar <- findOrCreateTable dbRef tableName
+      atomically $ modifyTVar' tableVar (\(_, _) -> (tableName, newTable))
+      return $ next Nothing
+    runStep (Lib4.UpdateTable (tableName, df) next) = do
       tableVar <- findOrCreateTable dbRef tableName
       atomically $ modifyTVar' tableVar (\(_, _) -> (tableName, df))
       return next
