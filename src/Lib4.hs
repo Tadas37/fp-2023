@@ -98,8 +98,7 @@ type ErrorMessage = String
 type SQLQuery = String
 type ColumnName = String
 
-deriving instance Show ParsedStatement
-deriving instance Eq ParsedStatement
+
 
 data SerializedTable = SerializedTable
   { tableName :: TableName
@@ -137,7 +136,7 @@ data ParsedStatement
   = SelectAll SelectedTables (Maybe WhereClause) (Maybe SortClause)
   | SelectAggregate SelectedTables SelectedColumns (Maybe WhereClause) (Maybe SortClause)
   | SelectColumns SelectedTables SelectedColumns (Maybe WhereClause) (Maybe SortClause)
-  | DeleteStatement TableName (Maybe WhereClause) 
+  | DeleteStatement TableName (Maybe WhereClause)
   | InsertStatement TableName (Maybe SelectedColumns) Row
   | UpdateStatement TableName SelectedColumns Row (Maybe WhereClause)
   | ShowTableStatement TableName
@@ -168,7 +167,7 @@ data ConditionValue
   deriving (Show, Eq)
 
 data SortClause
-  = ColumnSort [ColumnName] (Maybe SortOrder) 
+  = ColumnSort [ColumnName] (Maybe SortOrder) deriving(Show, Eq)
 
 data SortOrder = Asc | Desc deriving (Show, Eq)
 
@@ -181,6 +180,8 @@ data ExecutionAlgebra next
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
   | RemoveTable TableName (Maybe ErrorMessage -> next)
+  | CreateTable TableName [Column] (Maybe ErrorMessage -> next)
+  | DropTable TableName (Maybe ErrorMessage -> next)
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
@@ -219,9 +220,9 @@ parseSql query =
         Left err -> Left err
 
 getTableNames :: Lib4.ParsedStatement -> [Lib4.TableName]
-getTableNames (Lib4.SelectAll tableNames _) = tableNames
-getTableNames (Lib4.SelectAggregate tableNames _ _) = tableNames
-getTableNames (Lib4.SelectColumns tableNames _ _) = tableNames
+getTableNames (Lib4.SelectAll tableNames _ _) = tableNames
+getTableNames (Lib4.SelectAggregate tableNames _ _ _) = tableNames
+getTableNames (Lib4.SelectColumns tableNames _ _ _) = tableNames
 getTableNames (Lib4.DeleteStatement tableName _) = [tableName]
 getTableNames (Lib4.InsertStatement tableName _ _) = [tableName]
 getTableNames (Lib4.UpdateStatement tableName _ _ _) = [tableName]
@@ -237,7 +238,7 @@ deleteRows (Lib4.DeleteStatement tableName whereClause) tables =
                 Right dfFiltered -> Right (tableName, dfFiltered)
                 Left errMsg -> Left errMsg
         Nothing -> Left $ "Table not found: " ++ tableName
-deleteRows (Lib4.SelectAll _ _) _ = Left "SelectAll not valid for DeleteRows"
+deleteRows (Lib4.SelectAll _ _ _) _ = Left "SelectAll not valid for DeleteRows"
 deleteRows (Lib4.SelectAggregate {}) _ = Left "SelectAggregate not valid for DeleteRows"
 deleteRows (Lib4.SelectColumns {}) _ = Left "SelectColumns not valid for DeleteRows"
 deleteRows (Lib4.InsertStatement {}) _ = Left "InsertStatement not valid for DeleteRows"
@@ -261,7 +262,7 @@ insertRows (Lib4.InsertStatement tableName maybeSelectedColumns row) tables =
                     in (tableName, updatedDf)
                 Left errMsg -> error errMsg
         Nothing -> error $ "Table not found: " ++ tableName
-insertRows (Lib4.SelectAll _ _) _ = error "SelectAll not valid for InsertRows"
+insertRows (Lib4.SelectAll {}) _ = error "SelectAll not valid for InsertRows"
 insertRows (Lib4.SelectAggregate {}) _ = error "SelectAggregate not valid for InsertRows"
 insertRows (Lib4.SelectColumns {}) _ = error "SelectColumns not valid for InsertRows"
 insertRows (Lib4.DeleteStatement _ _) _ = error "DeleteStatement not valid for InsertRows"
@@ -279,7 +280,7 @@ updateRows (UpdateStatement tableName columns row maybeWhereClause) tables =
                 Right dfUpdated -> Right (tableName, dfUpdated)
                 Left errMsg -> Left errMsg
         Nothing -> Left $ "Table not found: " ++ tableName
-updateRows (SelectAll _ _) _ = Left "SelectAll not valid for UpdateRows"
+updateRows (SelectAll {}) _ = Left "SelectAll not valid for UpdateRows"
 updateRows (SelectAggregate {}) _ = Left "SelectAggregate not valid for UpdateRows"
 updateRows (SelectColumns {}) _ = Left "SelectColumns not valid for UpdateRows"
 updateRows (DeleteStatement _ _) _ = Left "DeleteStatement not valid for UpdateRows"
@@ -293,7 +294,7 @@ updateRows (Invalid _) _ = Left "Invalid statement cannot be processed in Update
 getReturnTableRows :: ParsedStatement -> [(TableName, DataFrame)] -> UTCTime -> [Row]
 getReturnTableRows parsedStatement tables _ =
     case parsedStatement of
-        SelectAll _ whereClauseAll -> filteredRows
+        SelectAll _ whereClauseAll _ -> filteredRows
           where
               filterdTablesJointDf = case extractMultipleTableDataframe (map snd tables) of
                 Right df -> df
@@ -303,8 +304,8 @@ getReturnTableRows parsedStatement tables _ =
                 Just wc -> mapMaybe (\row -> if rowSatisfiesWhereClause wc (getDataFrameColumns filterdTablesJointDf) row then Just row else Nothing) (getDataFrameRows filterdTablesJointDf)
                 Nothing -> getDataFrameRows filterdTablesJointDf
 
-        SelectColumns tableNames conditions whereClause -> Lib4.extractSelectedColumnsRows tableNames conditions tables whereClause
-        SelectAggregate tableNames aggFunc conditions -> Lib4.extractAggregateRows tableNames aggFunc conditions tables
+        SelectColumns tableNames conditions whereClause _ -> Lib4.extractSelectedColumnsRows tableNames conditions tables whereClause
+        SelectAggregate tableNames aggFunc conditions _ -> Lib4.extractAggregateRows tableNames aggFunc conditions tables
         _ -> error "Unhandled statement type in getReturnTableRows"
 
 
@@ -360,15 +361,16 @@ executeSql statement = do
     executeCreateTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
     executeCreateTable (CreateTableStatement tableName columns) = do
         result <- createTable tableName columns
-        return $ either Left (const $ Right emptyDataFrame) result
+        return $ maybe (Right emptyDataFrame) Left result
     executeCreateTable _ = return $ Left "Invalid CREATE TABLE statement"
+
 
     executeDropTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
     executeDropTable (DropTableStatement tableName) = do
         result <- dropTable tableName
-        return $ either Left (const $ Right emptyDataFrame) result
+        return $ maybe (Right emptyDataFrame) Left result
     executeDropTable _ = return $ Left "Invalid DROP TABLE statement"
-
+    
     executeSelect parsedStatement tables timeStamp = do
         let rows = getReturnTableRows parsedStatement tables timeStamp
         let columns = getSelectedColumns parsedStatement tables
@@ -403,10 +405,11 @@ emptyDataFrame :: DataFrame
 emptyDataFrame = DataFrame [] []
 
 createTable :: TableName -> [Column] -> Execution (Maybe ErrorMessage)
-createTable tableName columns = liftF $ CreateTable tableName columns id
+createTable tableName columns = liftF (CreateTable tableName columns id)
 
 dropTable :: TableName -> Execution (Maybe ErrorMessage)
-dropTable tableName = liftF $ DropTable tableName id
+dropTable tableName = liftF (DropTable tableName id)
+
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content =
@@ -509,9 +512,9 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
 
 validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
 validateStatement stmt tables = case stmt of
-  SelectAll tableNames whereClause -> returnError $ Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames && validateWhereClause whereClause tables
-  SelectColumns tableNames cols whereClause -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
-  SelectAggregate tableNames cols whereClause -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
+  SelectAll tableNames whereClause _ -> returnError $ Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames && validateWhereClause whereClause tables
+  SelectColumns tableNames cols whereClause _  -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
+  SelectAggregate tableNames cols whereClause _ -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
   InsertStatement tableName cols vals -> returnError $ validateTableAndColumns [tableName] cols tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip (fromMaybe [] cols) vals)
   UpdateStatement tableName cols vals whereClause -> returnError $ validateTableAndColumns [tableName] (Just cols) tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
   DeleteStatement tableName whereClause -> returnError $ tableName `Data.List.elem` Data.List.map fst tables && validateWhereClause whereClause tables
@@ -636,13 +639,13 @@ columnExistsInDataFrame Now _ = True
 
 getSelectedColumns :: Lib4.ParsedStatement -> [(Lib4.TableName, DataFrame)] -> [Column]
 getSelectedColumns stmt tbls = case stmt of
-    Lib4.SelectAll tableNames _ -> Data.List.concatMap (getTableColumns tbls) tableNames
-    Lib4.SelectColumns _ selectedColumns _ -> case getFilteredDataFrame (map snd tbls) selectedColumns of
+    Lib4.SelectAll tableNames _ _ -> Data.List.concatMap (getTableColumns tbls) tableNames
+    Lib4.SelectColumns _ selectedColumns _ _ -> case getFilteredDataFrame (map snd tbls) selectedColumns of
       Right df -> getDataFrameColumns df
       Left _ -> []  -- mapMaybe (findColumn tbls) selectedColumns
-    Lib4.SelectAggregate _ selectedColumns _ -> mapMaybe (findColumn tbls) selectedColumns
+    Lib4.SelectAggregate _ selectedColumns _ _ -> mapMaybe (findColumn tbls) selectedColumns
     _ -> []
-  
+
 getTableColumns :: [(Lib4.TableName, DataFrame)] -> Lib4.TableName -> [Column]
 getTableColumns tbls tableName = case Data.List.lookup tableName tbls of
     Just (DataFrame columns _) -> columns
@@ -1050,15 +1053,17 @@ splitIntoTuples (x : y : xs) = do
 
 splitIntoTuples _ = Left "Error parsing tables or columns. Maybe table abbreviation was not provided?"
 
+
+
 parseAggregate :: [TableName] -> Maybe WhereClause -> [SelectColumn] -> Either ErrorMessage ParsedStatement
-parseAggregate tableNames whereClause columns = Right $ SelectAggregate tableNames columns whereClause
+parseAggregate tableNames whereClause columns = Right $ SelectAggregate tableNames columns whereClause Nothing
 
 -- ignores commas in columns
 parseColumnsSelect :: [TableName] -> [(String, String)] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
-parseColumnsSelect tables columns whereClause = Right $ SelectColumns tables (Data.List.map (\(tname, cname) -> if tname == "now()" && cname == "now()" then Now else TableColumn tname cname) columns) whereClause
+parseColumnsSelect tables columns whereClause = Right $ SelectColumns tables (map (\(tname, cname) -> if tname == "now()" && cname == "now()" then Now else TableColumn tname cname) columns) whereClause Nothing
 
 parseAllColumns :: [TableName] -> Maybe WhereClause -> Either ErrorMessage ParsedStatement
-parseAllColumns tableNames whereClause = Right $ SelectAll tableNames whereClause
+parseAllColumns tableNames whereClause = Right $ SelectAll tableNames whereClause Nothing
 
 getSelectType :: [String] -> Either ErrorMessage SelectType
 getSelectType selectColumns
@@ -1607,7 +1612,7 @@ maxAggregate :: Lib4.TableName -> String -> [(Lib4.TableName, DataFrame)] -> May
 maxAggregate _ colName tables whereClause =
     let tableDf = case extractMultipleTableDataframe (map snd tables) of
           Right df -> df
-          Left _ -> DataFrame [] [] 
+          Left _ -> DataFrame [] []
         filteredRows = case whereClause of
           Just wc -> mapMaybe (\row -> if rowSatisfiesWhereClause wc (getDataFrameColumns tableDf) row then Just row else Nothing) (getDataFrameRows tableDf)
           Nothing -> getDataFrameRows tableDf
@@ -1622,7 +1627,7 @@ avgAggregate :: Lib4.TableName -> String -> [(Lib4.TableName, DataFrame)] -> May
 avgAggregate _ colName tables whereClause =
     let tableDf = case extractMultipleTableDataframe (map snd tables) of
           Right df -> df
-          Left _ -> DataFrame [] [] 
+          Left _ -> DataFrame [] []
         filteredRows = case whereClause of
           Just wc -> mapMaybe (\row -> if rowSatisfiesWhereClause wc (getDataFrameColumns tableDf) row then Just row else Nothing) (getDataFrameRows tableDf)
           Nothing -> getDataFrameRows tableDf
