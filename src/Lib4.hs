@@ -164,11 +164,12 @@ data ConditionValue
   deriving (Show, Eq)
 
 data SortClause
-  = ColumnSort [ColumnName] (Maybe SortOrder)
-
+  = ColumnSort SelectedColumns (Maybe SortOrder)
+  deriving (Show, Eq)
 data SortOrder
   = Asc
   | Desc
+  deriving (Show, Eq)
 
 data SelectType = Aggregate | ColumnsAndTime | AllColumns
 
