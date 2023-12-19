@@ -82,7 +82,8 @@ import Data.List
       notElem,
       findIndex,
       (!!),
-      isInfixOf )
+      isInfixOf, 
+      sortBy )
 import qualified Data.Yaml as Y
 import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
@@ -173,7 +174,7 @@ data SortOrder = Asc | Desc deriving (Show, Eq)
 
 data SelectType = Aggregate | ColumnsAndTime | AllColumns
 
-data StatementType = Select | Delete | Insert | Update | ShowTable | ShowTables | InvalidStatement
+data StatementType = Select | Delete | Insert | Update | Create | ShowTable | ShowTables | InvalidStatement
 
 data ExecutionAlgebra next
   = LoadFiles [TableName] (Either ErrorMessage [FileContent] -> next)
@@ -181,7 +182,6 @@ data ExecutionAlgebra next
   | GetTime (UTCTime -> next)
   | RemoveTable TableName (Maybe ErrorMessage -> next)
   | CreateTable TableName [Column] (Maybe ErrorMessage -> next)
-  | DropTable TableName (Maybe ErrorMessage -> next)
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
@@ -197,6 +197,36 @@ getTime = liftF $ GetTime id
 
 removeTable :: TableName -> Execution (Maybe ErrorMessage)
 removeTable tableName = liftF $ RemoveTable tableName id
+
+createTable :: TableName -> [Column] -> Execution (Maybe ErrorMessage)
+createTable tableName columns = liftF (CreateTable tableName columns id)
+
+sortDataFrame :: DataFrame -> [(SortOrder, Maybe TableName, ColumnName)] -> Either ErrorMessage DataFrame
+sortDataFrame (DataFrame columns rows) sortClause = do
+    sortCriteria <- mapM (createSortCriterion columns) sortClause
+    let sortedRows = sortBy (makeMultiColumnComparator sortCriteria) rows
+    return $ DataFrame columns sortedRows
+
+createSortCriterion :: [Column] -> (SortOrder, Maybe TableName, ColumnName) -> Either ErrorMessage (Int, SortOrder)
+createSortCriterion columns (direction, maybeTableName, columnName) =
+    case findIndex (matchesColumn maybeTableName columnName) columns of
+        Just idx -> Right (idx, direction)
+        Nothing -> Left $ "Column not found: " ++ fromMaybe "" maybeTableName ++ "." ++ columnName
+
+matchesColumn :: Maybe TableName -> ColumnName -> Column -> Bool
+matchesColumn maybeTableName columnName (Column colName _) =
+    colName == fullColumnName
+    where fullColumnName = fromMaybe "" maybeTableName ++ "." ++ columnName
+
+makeMultiColumnComparator :: [(Int, SortOrder)] -> Row -> Row -> Ordering
+makeMultiColumnComparator [] _ _ = EQ
+makeMultiColumnComparator ((idx, dir):criteria) row1 row2 =
+    let primaryOrder = compareValue1 dir (row1 !! idx) (row2 !! idx)
+    in if primaryOrder == EQ then makeMultiColumnComparator criteria row1 row2 else primaryOrder
+
+compareValue1 :: SortOrder -> Value -> Value -> Ordering
+compareValue1 Asc v1 v2 = Prelude.compare v1 v2
+compareValue1 Desc v1 v2 = Prelude.compare v2 v1
 
 parseTables :: [FileContent] -> Either String [(TableName, DataFrame)]
 parseTables contents =
@@ -221,8 +251,10 @@ parseSql query =
 
 getTableNames :: Lib4.ParsedStatement -> [Lib4.TableName]
 getTableNames (Lib4.SelectAll tableNames _ _) = tableNames
+getTableNames (Lib4.CreateTableStatement tableName _) = [tableName]
 getTableNames (Lib4.SelectAggregate tableNames _ _ _) = tableNames
 getTableNames (Lib4.SelectColumns tableNames _ _ _) = tableNames
+getTableNames (Lib4.DropTableStatement tableName) = [tableName]
 getTableNames (Lib4.DeleteStatement tableName _) = [tableName]
 getTableNames (Lib4.InsertStatement tableName _ _) = [tableName]
 getTableNames (Lib4.UpdateStatement tableName _ _ _) = [tableName]
@@ -241,7 +273,9 @@ deleteRows (Lib4.DeleteStatement tableName whereClause) tables =
 deleteRows (Lib4.SelectAll _ _ _) _ = Left "SelectAll not valid for DeleteRows"
 deleteRows (Lib4.SelectAggregate {}) _ = Left "SelectAggregate not valid for DeleteRows"
 deleteRows (Lib4.SelectColumns {}) _ = Left "SelectColumns not valid for DeleteRows"
+deleteRows (Lib4.CreateTableStatement _ _) _= Left "Create table is invalid for DeleteRows"
 deleteRows (Lib4.InsertStatement {}) _ = Left "InsertStatement not valid for DeleteRows"
+deleteRows (Lib4.DropTableStatement _) _ = Left "DropTableStatement not valid for DeleteRows"
 deleteRows (Lib4.UpdateStatement {}) _ = Left "UpdateStatement not valid for DeleteRows"
 deleteRows (Lib4.ShowTableStatement _) _ = Left "ShowTableStatement not valid for DeleteRows"
 deleteRows Lib4.ShowTablesStatement _ = Left "ShowTablesStatement not valid for DeleteRows"
@@ -266,6 +300,8 @@ insertRows (Lib4.SelectAll {}) _ = error "SelectAll not valid for InsertRows"
 insertRows (Lib4.SelectAggregate {}) _ = error "SelectAggregate not valid for InsertRows"
 insertRows (Lib4.SelectColumns {}) _ = error "SelectColumns not valid for InsertRows"
 insertRows (Lib4.DeleteStatement _ _) _ = error "DeleteStatement not valid for InsertRows"
+insertRows (Lib4.CreateTableStatement _ _) _= error "Create table is invalid for insertRows"
+insertRows (Lib4.DropTableStatement _) _ = error "DropTableStatement not valid for InsertRows"
 insertRows (Lib4.UpdateStatement {}) _ = error "UpdateStatement not valid for InsertRows"
 insertRows (Lib4.ShowTableStatement _) _ = error "ShowTableStatement not valid for InsertRows"
 insertRows Lib4.ShowTablesStatement _ = error "ShowTablesStatement not valid for InsertRows"
@@ -283,8 +319,10 @@ updateRows (UpdateStatement tableName columns row maybeWhereClause) tables =
 updateRows (SelectAll {}) _ = Left "SelectAll not valid for UpdateRows"
 updateRows (SelectAggregate {}) _ = Left "SelectAggregate not valid for UpdateRows"
 updateRows (SelectColumns {}) _ = Left "SelectColumns not valid for UpdateRows"
+updateRows (Lib4.CreateTableStatement _ _) _= Left "Create table is invalid for UpdateRows"
 updateRows (DeleteStatement _ _) _ = Left "DeleteStatement not valid for UpdateRows"
 updateRows (ShowTableStatement _) _ = Left "ShowTableStatement not valid for UpdateRows"
+updateRows (Lib4.DropTableStatement _) _ = Left "DropTableStatement not valid for UpdateRows"
 updateRows ShowTablesStatement _ = Left "ShowTablesStatement not valid for UpdateRows"
 updateRows (InsertStatement {}) _ = Left "InsertStatement not valid for UpdateRows"
 updateRows (Invalid _) _ = Left "Invalid statement cannot be processed in UpdateRows"
@@ -331,12 +369,8 @@ executeSql statement = do
     either (return . Left) handleParsedStatement parsedResult
   where
     handleParsedStatement parsedStatement = do
-        case parsedStatement of
-            CreateTableStatement _ _ -> executeCreateTable parsedStatement
-            DropTableStatement _ -> executeDropTable parsedStatement
-            _ -> do
-                tableFiles <- loadFiles (getTableNames parsedStatement)
-                either (return . Left) (processTableFiles parsedStatement) tableFiles
+        tableFiles <- loadFiles (getTableNames parsedStatement)
+        either (return . Left) (processTableFiles parsedStatement) tableFiles
 
     processTableFiles parsedStatement content = do
         let parsedTables = parseTables content
@@ -350,6 +384,7 @@ executeSql statement = do
             return $ Left errorMessage
         else
             case statementType of
+                Create -> executeCreateTable parsedStatement
                 Select -> executeSelect parsedStatement tables timeStamp
                 Delete -> executeDelete parsedStatement tables
                 Insert -> executeInsert parsedStatement tables
@@ -363,13 +398,6 @@ executeSql statement = do
         result <- createTable tableName columns
         return $ maybe (Right emptyDataFrame) Left result
     executeCreateTable _ = return $ Left "Invalid CREATE TABLE statement"
-
-
-    executeDropTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
-    executeDropTable (DropTableStatement tableName) = do
-        result <- dropTable tableName
-        return $ maybe (Right emptyDataFrame) Left result
-    executeDropTable _ = return $ Left "Invalid DROP TABLE statement"
     
     executeSelect parsedStatement tables timeStamp = do
         let rows = getReturnTableRows parsedStatement tables timeStamp
@@ -403,12 +431,6 @@ getNonSelectTableNameFromStatement _ = error "Non-select statement expected"
 
 emptyDataFrame :: DataFrame
 emptyDataFrame = DataFrame [] []
-
-createTable :: TableName -> [Column] -> Execution (Maybe ErrorMessage)
-createTable tableName columns = liftF (CreateTable tableName columns id)
-
-dropTable :: TableName -> Execution (Maybe ErrorMessage)
-dropTable tableName = liftF (DropTable tableName id)
 
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)

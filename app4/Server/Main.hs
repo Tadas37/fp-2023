@@ -112,14 +112,6 @@ runExecuteIO dbRef (Free step) = do
           return $ next $ Right fileContents
         else
           return $ next $ Left "One or more provided tables does not exist"
-    runStep (Lib4.DropTable tableName next) = do
-      t <- findTable dbRef tableName
-      case t of
-        Nothing -> return $ next $ Just $ "Table '" ++ tableName ++ "' does not exist."
-        Just ref -> do
-          atomically $ modifyTVar' dbRef (filter (/= ref))
-          removeFile $ getTableFilePath tableName
-          return $ next Nothing
     runStep (Lib4.CreateTable tableName columns next) = do
       let newTable = DataFrame columns [] 
       tableVar <- findOrCreateTable dbRef tableName
