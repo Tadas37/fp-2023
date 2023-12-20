@@ -281,6 +281,7 @@ getTableNames :: Lib4.ParsedStatement -> [Lib4.TableName]
 getTableNames (Lib4.SelectAll tableNames _ _) = tableNames
 getTableNames (Lib4.SelectAggregate tableNames _ _ _) = tableNames
 getTableNames (Lib4.SelectColumns tableNames _ _ _) = tableNames
+getTableNames (Lib4.DropTableStatement tableNames ) = [tableNames]
 getTableNames (Lib4.DeleteStatement tableName _) = [tableName]
 getTableNames (Lib4.InsertStatement tableName _ _) = [tableName]
 getTableNames (Lib4.UpdateStatement tableName _ _ _) = [tableName]
@@ -559,6 +560,7 @@ validateStatement stmt tables = case stmt of
   UpdateStatement tableName cols vals whereClause -> returnError $ validateTableAndColumns [tableName] (Just cols) tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
   DeleteStatement tableName whereClause -> returnError $ tableName `Data.List.elem` Data.List.map fst tables && validateWhereClause whereClause tables
   ShowTablesStatement -> returnError True
+  DropTableStatement tableName -> returnError True -----Dummy implementation: reikia parasyt validation for create ir drop table
   ShowTableStatement tableName -> returnError $ Data.List.elem tableName $ Data.List.map fst tables
   Invalid err -> (False, err)
 
