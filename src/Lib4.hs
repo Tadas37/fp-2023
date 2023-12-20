@@ -399,7 +399,7 @@ executeSql statement = do
         either (return . Left) (executeStatement parsedStatement) parsedTables
 
     executeStatement parsedStatement tables = do
-        let statementType = getStatementType (show parsedStatement)
+        let statementType = getStatementType statement
         timeStamp <- getTime
         let (isValid, errorMessage) = validateStatement parsedStatement tables
         if not isValid then
