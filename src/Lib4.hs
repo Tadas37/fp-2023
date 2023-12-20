@@ -282,7 +282,7 @@ getTableNames (Lib4.SelectAll tableNames _ _) = tableNames
 getTableNames (Lib4.SelectAggregate tableNames _ _ _) = tableNames
 getTableNames (Lib4.SelectColumns tableNames _ _ _) = tableNames
 getTableNames (Lib4.DropTableStatement tableNames ) = [tableNames]
-getTableNames (Lib4.CreateTableStatement tableNames _) = [tableNames];
+getTableNames (Lib4.CreateTableStatement _ _) = [];
 getTableNames (Lib4.DeleteStatement tableName _) = [tableName]
 getTableNames (Lib4.InsertStatement tableName _ _) = [tableName]
 getTableNames (Lib4.UpdateStatement tableName _ _ _) = [tableName]
@@ -414,7 +414,7 @@ executeSql statement = do
                 Update -> executeUpdate parsedStatement tables
                 ShowTables -> executeShowTables parsedStatement
                 ShowTable -> executeShowTable parsedStatement tables
-                InvalidStatement -> return $ Left "Invalid statement"
+                InvalidStatement -> return $ Left "Invalid statement in executeSQL"
 
     executeDropTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
     executeDropTable (DropTableStatement tableName) = do
@@ -488,6 +488,8 @@ getStatementType query
     | "insert" `isPrefixOf` lowerQuery = Insert
     | "update" `isPrefixOf` lowerQuery = Update
     | "delete" `isPrefixOf` lowerQuery = Delete
+    | "create table" `isPrefixOf` lowerQuery = CreateTable
+    | "drop table" `isPrefixOf` lowerQuery = DropTable
     | "show tables" `Data.List.isInfixOf` lowerQuery = ShowTables
     | "show table" `isPrefixOf` lowerQuery = ShowTable
     | otherwise = InvalidStatement
@@ -568,7 +570,7 @@ validateStatement stmt tables = case stmt of
   UpdateStatement tableName cols vals whereClause -> returnError $ validateTableAndColumns [tableName] (Just cols) tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
   DeleteStatement tableName whereClause -> returnError $ tableName `Data.List.elem` Data.List.map fst tables && validateWhereClause whereClause tables
   ShowTablesStatement -> returnError True
-  CreateTableStatement tableName cols -> validateCreateTableStatement (CreateTableStatement tableName cols) tables
+  CreateTableStatement tableName cols -> returnError True
   DropTableStatement tableName -> validateDropTableStatement (DropTableStatement tableName) tables
   ShowTableStatement tableName -> returnError $ Data.List.elem tableName $ Data.List.map fst tables
   Invalid err -> (False, err)
@@ -576,14 +578,6 @@ validateStatement stmt tables = case stmt of
 returnError :: Bool -> (Bool, ErrorMessage)
 returnError bool = (bool, "Non existant columns or tables in statement or values dont match column")
 
-validateCreateTableStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
-validateCreateTableStatement (CreateTableStatement tableName _) tables =
-    if tableName `elem` map fst tables
-    then (False, "Table already exists: " ++ tableName)
-    else (True, "")
-validateCreateTableStatement _ _ = (False, "Invalid statement type for CreateTable validation")
-
-    
 validateDropTableStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
 validateDropTableStatement (DropTableStatement tableName) tables =
     if tableName `elem` map fst tables
