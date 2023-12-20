@@ -560,12 +560,28 @@ validateStatement stmt tables = case stmt of
   UpdateStatement tableName cols vals whereClause -> returnError $ validateTableAndColumns [tableName] (Just cols) tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
   DeleteStatement tableName whereClause -> returnError $ tableName `Data.List.elem` Data.List.map fst tables && validateWhereClause whereClause tables
   ShowTablesStatement -> returnError True
-  DropTableStatement tableName -> returnError True -----Dummy implementation: reikia parasyt validation for create ir drop table
+  CreateTableStatement tableName cols -> validateCreateTableStatement (CreateTableStatement tableName cols) tables
+  DropTableStatement tableName -> validateDropTableStatement (DropTableStatement tableName) tables
   ShowTableStatement tableName -> returnError $ Data.List.elem tableName $ Data.List.map fst tables
   Invalid err -> (False, err)
 
 returnError :: Bool -> (Bool, ErrorMessage)
 returnError bool = (bool, "Non existant columns or tables in statement or values dont match column")
+
+validateCreateTableStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
+validateCreateTableStatement (CreateTableStatement tableName _) tables =
+    if tableName `elem` map fst tables
+    then (False, "Table already exists: " ++ tableName)
+    else (True, "")
+validateCreateTableStatement _ _ = (False, "Invalid statement type for CreateTable validation")
+
+    
+validateDropTableStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
+validateDropTableStatement (DropTableStatement tableName) tables =
+    if tableName `elem` map fst tables
+    then (True, "")
+    else (False, "Table does not exist: " ++ tableName)
+validateDropTableStatement _ _ = (False, "Invalid statement type for DropTable validation")
 
 validateWhereClause :: Maybe WhereClause -> [(TableName, DataFrame)] -> Bool
 validateWhereClause clause tables = case clause of
