@@ -282,6 +282,7 @@ getTableNames (Lib4.SelectAll tableNames _ _) = tableNames
 getTableNames (Lib4.SelectAggregate tableNames _ _ _) = tableNames
 getTableNames (Lib4.SelectColumns tableNames _ _ _) = tableNames
 getTableNames (Lib4.DropTableStatement tableNames ) = [tableNames]
+getTableNames (Lib4.CreateTableStatement tableNames _) = [tableNames];
 getTableNames (Lib4.DeleteStatement tableName _) = [tableName]
 getTableNames (Lib4.InsertStatement tableName _ _) = [tableName]
 getTableNames (Lib4.UpdateStatement tableName _ _ _) = [tableName]
@@ -407,6 +408,7 @@ executeSql statement = do
             case statementType of
                 Select -> executeSelect parsedStatement tables timeStamp
                 CreateTable -> executeCreateTable parsedStatement
+                DropTable -> executeDropTable parsedStatement
                 Delete -> executeDelete parsedStatement tables
                 Insert -> executeInsert parsedStatement tables
                 Update -> executeUpdate parsedStatement tables
@@ -414,6 +416,12 @@ executeSql statement = do
                 ShowTable -> executeShowTable parsedStatement tables
                 InvalidStatement -> return $ Left "Invalid statement"
 
+    executeDropTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
+    executeDropTable (DropTableStatement tableName) = do
+        result <- removeTable tableName
+        return $ maybe (Right emptyDataFrame) Left result
+    executeDropTable _ = return $ Left "Invalid DROP TABLE statement"
+    
     executeCreateTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
     executeCreateTable (CreateTableStatement tableName columns) = do
         result <- createTablee tableName columns
