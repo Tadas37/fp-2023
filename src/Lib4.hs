@@ -649,6 +649,7 @@ validateDropTableStatement (DropTableStatement tableName) tables =
     else (False, "Table does not exist: " ++ tableName)
 validateDropTableStatement _ _ = (False, "Invalid statement type for DropTable validation")
 
+
 validateWhereClause :: Maybe WhereClause -> [(TableName, DataFrame)] -> Bool
 validateWhereClause clause tables = case clause of
   Just cClause -> validateExistingClause cClause tables
