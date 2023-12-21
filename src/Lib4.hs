@@ -561,22 +561,65 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
 -- Statement validation
 
 
-validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
 validateStatement stmt tables = case stmt of
-  SelectAll tableNames whereClause _ -> returnError $ Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames && validateWhereClause whereClause tables
-  SelectColumns tableNames cols whereClause _ -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
-  SelectAggregate tableNames cols whereClause _ -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
-  InsertStatement tableName cols vals -> returnError $ validateTableAndColumns [tableName] cols tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip (fromMaybe [] cols) vals)
-  UpdateStatement tableName cols vals whereClause -> returnError $ validateTableAndColumns [tableName] (Just cols) tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
-  DeleteStatement tableName whereClause -> returnError $ tableName `Data.List.elem` Data.List.map fst tables && validateWhereClause whereClause tables
-  ShowTablesStatement -> returnError True
-  CreateTableStatement tableName cols -> returnError True
-  DropTableStatement tableName -> validateDropTableStatement (DropTableStatement tableName) tables
-  ShowTableStatement tableName -> returnError $ Data.List.elem tableName $ Data.List.map fst tables
-  Invalid err -> (False, err)
+  SelectAll tableNames whereClause sortClause ->
+    returnError $ validateSelectAll tableNames whereClause sortClause tables
+  SelectColumns tableNames cols whereClause sortClause ->
+    returnError $ validateSelectColumns tableNames (Just cols) whereClause sortClause tables
+  SelectAggregate tableNames cols whereClause sortClause ->
+    returnError $ validateSelectAggregate tableNames cols whereClause sortClause tables
+  InsertStatement tableName cols vals ->
+    returnError $ validateTableAndColumns [tableName] cols tables &&
+      all (\(column, value) -> selectColumnMatchesValue column tables value) (zip (fromMaybe [] cols) vals)
+  UpdateStatement tableName cols vals whereClause ->
+    returnError $ validateTableAndColumns [tableName] (Just cols) tables &&
+      validateWhereClause whereClause tables &&
+      all (\(column, value) -> selectColumnMatchesValue column tables value) (zip cols vals)
+  DeleteStatement tableName whereClause ->
+    returnError $ tableName `elem` map fst tables && validateWhereClause whereClause tables
+  ShowTablesStatement ->
+    returnError True
+  CreateTableStatement tableName cols ->
+    returnError True
+  DropTableStatement tableName ->
+    validateDropTableStatement (DropTableStatement tableName) tables
+  ShowTableStatement tableName ->
+    returnError $ elem tableName $ map fst tables
+  Invalid err ->
+    (False, err)
 
-returnError :: Bool -> (Bool, ErrorMessage)
-returnError bool = (bool, "Non existant columns or tables in statement or values dont match column")
+returnError :: Bool -> (Bool, String)
+returnError bool = (bool, "Non existent columns or tables in statement or values don't match column")
+
+validateSelectAll :: [TableName] -> Maybe WhereClause -> Maybe SortClause -> [(TableName, DataFrame)] -> Bool
+validateSelectAll tableNames whereClause sortClause tables =
+  all (`elem` map fst tables) tableNames &&
+  validateWhereClause whereClause tables &&
+  validateSortClause sortClause tables
+
+validateSelectColumns :: [TableName] -> Maybe [SelectColumn] -> Maybe WhereClause -> Maybe SortClause -> [(TableName, DataFrame)] -> Bool
+validateSelectColumns tableNames cols whereClause sortClause tables =
+  validateTableAndColumns tableNames cols tables &&
+  validateWhereClause whereClause tables &&
+  validateSortClause sortClause tables
+
+validateSelectAggregate :: [TableName] -> [SelectColumn] -> Maybe WhereClause -> Maybe SortClause -> [(TableName, DataFrame)] -> Bool
+validateSelectAggregate tableNames cols whereClause sortClause tables =
+  validateTableAndColumns tableNames (Just cols) tables &&
+  validateWhereClause whereClause tables &&
+  validateSortClause sortClause tables
+
+validateSortClause :: Maybe SortClause -> [(TableName, DataFrame)] -> Bool
+validateSortClause (Just (ColumnSort selectedColumns _)) tables =
+  all (\col -> case col of
+                 TableColumn tName cName -> columnExistsInTable (TableColumn tName cName) (lookup tName tables)
+                 _ -> False) selectedColumns
+validateSortClause Nothing _ = True
+
+columnExistsInTable :: SelectColumn -> Maybe DataFrame -> Bool
+columnExistsInTable (TableColumn _ colName) (Just (DataFrame cols _)) =
+  any (\(Column name _) -> name == colName) cols
+columnExistsInTable _ _ = False
 
 validateDropTableStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
 validateDropTableStatement (DropTableStatement tableName) tables =
