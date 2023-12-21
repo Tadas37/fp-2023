@@ -7,7 +7,7 @@ import Lib2
 import qualified Lib3
 import Test.Hspec
 import Data.Time (UTCTime, getCurrentTime)
-import qualified Lib3
+import qualified Lib4
 import Control.Exception (evaluate, catch)
 import Control.Monad.Free
 
@@ -650,6 +650,32 @@ main = hspec $ do
           let updatedRow = head (extractRows updatedDataFrame)
           updatedRow `shouldBe` originalRow
         Left errMsg -> expectationFailure $ "Update failed: " ++ errMsg
+
+  describe "drop, create tests" $ do
+    it "parses drop table statement (lowercase)" $ do
+      let input = "drop table tablename;"
+      Lib4.parseSql input `shouldBe` Right (Lib4.DropTableStatement "tablename")
+    it "parses drop table statement with (mixed case)" $ do
+      let input = "dRoP tAbLe tablename;"
+      Lib4.parseSql input `shouldBe` Right (Lib4.DropTableStatement "tablename")
+    it "parses drop table statement with (uppercase)" $ do
+      let input = "DROP TABLE tablename;"
+      Lib4.parseSql input `shouldBe` Right (Lib4.DropTableStatement "tablename")
+    it "parses drop table statement with many whitespaces" $ do
+      let input = "drop    table          tablename;"
+      Lib4.parseSql input `shouldBe` Right (Lib4.DropTableStatement "tablename")
+    it "handles incorrect drop table statement with missed keyword" $ do
+      let input = "drop tablename;"
+      Lib4.parseSql input `shouldSatisfy` isLeft
+    it "parses create table statement" $ do
+      let input = "create table exampleTable (id int, name varchar(255));"
+      Lib4.parseSql input `shouldBe` Right (Lib4.CreateTableStatement "exampleTable" [Column "id" IntegerType,Column "name" StringType])
+    it "handles incorrect create table statement with missed keyword" $ do
+      let input = "create exampleTable (id int , name varchar );"
+      Lib4.parseSql input `shouldSatisfy` isLeft
+    it "handles incorrect create table statement with invalid datatype" $ do
+      let input = "create table exampleTable (id in , name varchar );"
+      Lib4.parseSql input `shouldSatisfy` isLeft
 
 extractRows :: DataFrame -> [Row]
 extractRows (DataFrame _ rows) = rows

@@ -83,7 +83,8 @@ import Data.List
       notElem,
       findIndex,
       (!!),
-      isInfixOf )
+      isInfixOf, 
+      sortBy )
 import qualified Data.Yaml as Y
 import Data.Char (toLower, isDigit)
 import Data.Time (UTCTime)
@@ -143,7 +144,14 @@ data ParsedStatement
   | CreateTableStatement TableName [Column]
   | DropTableStatement TableName
   | Invalid ErrorMessage
+  | SelectStatement
+      { selectedTables :: SelectedTables
+      , selectedColumns :: Maybe SelectedColumns
+      , whereClause :: Maybe WhereClause
+      , orderClause :: Maybe OrderClause 
+      }
   deriving (Show, Eq)
+
 
 data WhereClause
   = IsValueBool Bool TableName String
@@ -173,6 +181,8 @@ data SortOrder
   = Asc
   | Desc
   deriving (Show, Eq)
+
+type OrderClause = [(SortOrder, Maybe TableName, ColumnName)]
 
 newtype EitherT e m a = EitherT {
     runEitherT :: m (Either e a)
@@ -208,6 +218,7 @@ data ExecutionAlgebra next
   | UpdateTable (TableName, DataFrame) next
   | GetTime (UTCTime -> next)
   | RemoveTable TableName (Maybe ErrorMessage -> next)
+  | CreateTablee TableName [Column] (Maybe ErrorMessage -> next)
   deriving Functor
 
 type Execution = Free ExecutionAlgebra
@@ -223,6 +234,9 @@ getTime = liftF $ GetTime id
 
 removeTable :: TableName -> Execution (Maybe ErrorMessage)
 removeTable tableName = liftF $ RemoveTable tableName id
+
+createTablee :: TableName -> [Column] -> Execution (Maybe ErrorMessage)
+createTablee tableName columns = liftF (CreateTablee tableName columns id)
 
 parseTables :: [FileContent] -> Either String [(TableName, DataFrame)]
 parseTables contents =
@@ -249,6 +263,8 @@ getTableNames :: Lib4.ParsedStatement -> [Lib4.TableName]
 getTableNames (Lib4.SelectAll tableNames _ _) = tableNames
 getTableNames (Lib4.SelectAggregate tableNames _ _ _) = tableNames
 getTableNames (Lib4.SelectColumns tableNames _ _ _) = tableNames
+getTableNames (Lib4.DropTableStatement tableNames ) = [tableNames]
+getTableNames (Lib4.CreateTableStatement _ _) = [];
 getTableNames (Lib4.DeleteStatement tableName _) = [tableName]
 getTableNames (Lib4.InsertStatement tableName _ _) = [tableName]
 getTableNames (Lib4.UpdateStatement tableName _ _ _) = [tableName]
@@ -365,7 +381,7 @@ executeSql statement = do
         either (return . Left) (executeStatement parsedStatement) parsedTables
 
     executeStatement parsedStatement tables = do
-        let statementType = getStatementType (show parsedStatement)
+        let statementType = getStatementType statement
         timeStamp <- getTime
         let (isValid, errorMessage) = validateStatement parsedStatement tables
         if not isValid then
@@ -373,18 +389,46 @@ executeSql statement = do
         else
             case statementType of
                 Select -> executeSelect parsedStatement tables timeStamp
+                CreateTable -> executeCreateTable parsedStatement
+                DropTable -> executeDropTable parsedStatement
                 Delete -> executeDelete parsedStatement tables
                 Insert -> executeInsert parsedStatement tables
                 Update -> executeUpdate parsedStatement tables
                 ShowTables -> executeShowTables parsedStatement
                 ShowTable -> executeShowTable parsedStatement tables
-                InvalidStatement -> return $ Left "Invalid statement"
+                InvalidStatement -> return $ Left "Invalid statement in executeSQL"
+
+    executeDropTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
+    executeDropTable (DropTableStatement tableName) = do
+        result <- removeTable tableName
+        return $ maybe (Right emptyDataFrame) Left result
+    executeDropTable _ = return $ Left "Invalid DROP TABLE statement"
+    
+    executeCreateTable :: ParsedStatement -> Execution (Either ErrorMessage DataFrame)
+    executeCreateTable (CreateTableStatement tableName columns) = do
+        result <- createTablee tableName columns
+        return $ maybe (Right emptyDataFrame) Left result
+    executeCreateTable _ = return $ Left "Invalid CREATE TABLE statement"
 
     executeSelect parsedStatement tables timeStamp = do
-        let rows = getReturnTableRows parsedStatement tables timeStamp
-        let columns = getSelectedColumns parsedStatement tables
-        let df = generateDataFrame columns rows
-        return $ Right df
+      let rows = getReturnTableRows parsedStatement tables timeStamp
+      let columns = getSelectedColumns parsedStatement tables
+      let df = generateDataFrame columns rows
+      case getOrderClause parsedStatement of
+          Just orderClause -> case sortDataFrame df orderClause of
+                                  Left errMsg -> return $ Left errMsg
+                                  Right sortedDf -> return $ Right sortedDf
+          Nothing -> return $ Right df
+
+    getOrderClause :: ParsedStatement -> Maybe [(SortOrder, Maybe TableName, ColumnName)]
+    getOrderClause (SelectStatement { orderClause = oc }) = oc
+    getOrderClause _ = Nothing
+    
+    sortDataFrame :: DataFrame -> [(SortOrder, Maybe TableName, ColumnName)] -> Either ErrorMessage DataFrame
+    sortDataFrame (DataFrame columns rows) sortClause = do
+        sortCriteria <- mapM (createSortCriterion columns) sortClause
+        let sortedRows = sortBy (makeMultiColumnComparator sortCriteria) rows
+        return $ DataFrame columns sortedRows
 
     executeDelete parsedStatement tables = do
         let deleteResult = deleteRows parsedStatement tables
@@ -408,6 +452,34 @@ executeSql statement = do
 getNonSelectTableNameFromStatement :: ParsedStatement -> TableName
 getNonSelectTableNameFromStatement (ShowTableStatement tableName) = tableName
 getNonSelectTableNameFromStatement _ = error "Non-select statement expected"
+
+emptyDataFrame :: DataFrame
+emptyDataFrame = DataFrame [] []
+
+createSortCriterion :: [Column] -> (SortOrder, Maybe TableName, ColumnName) -> Either ErrorMessage (Int, SortOrder)
+createSortCriterion columns (direction, maybeTableName, columnName) =
+    if all isDigit columnName
+    then let idx = read columnName - 1
+          in if idx >= 0 && idx < length columns
+            then Right (idx, direction)
+            else Left $ "Column index out of range: " ++ columnName
+    else let nameToMatch = if isJust maybeTableName then columnName else columnName
+          in case findIndex (matchesColumn nameToMatch) columns of
+              Just idx -> Right (idx, direction)
+              Nothing -> Left $ "Column not found: " ++ nameToMatch
+
+matchesColumn :: String -> Column -> Bool
+matchesColumn fullName (Column colName _) = colName == fullName
+
+makeMultiColumnComparator :: [(Int, SortOrder)] -> Row -> Row -> Ordering
+makeMultiColumnComparator [] _ _ = EQ
+makeMultiColumnComparator ((idx, dir):criteria) row1 row2 =
+    let primaryOrder = compareValue1 dir (row1 !! idx) (row2 !! idx)
+    in if primaryOrder == EQ then makeMultiColumnComparator criteria row1 row2 else primaryOrder
+
+compareValue1 :: SortOrder -> Value -> Value -> Ordering
+compareValue1 Asc v1 v2 = Prelude.compare v1 v2
+compareValue1 Desc v1 v2 = Prelude.compare v2 v1
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content =
@@ -437,6 +509,8 @@ getStatementType query
     | "insert" `isPrefixOf` lowerQuery = Insert
     | "update" `isPrefixOf` lowerQuery = Update
     | "delete" `isPrefixOf` lowerQuery = Delete
+    | "create table" `isPrefixOf` lowerQuery = CreateTable
+    | "drop table" `isPrefixOf` lowerQuery = DropTable
     | "show tables" `Data.List.isInfixOf` lowerQuery = ShowTables
     | "show table" `isPrefixOf` lowerQuery = ShowTable
     | otherwise = InvalidStatement
@@ -508,20 +582,73 @@ dataFrameToSerializedTable (tblName, DataFrame columns rows) =
 -- Statement validation
 
 
-validateStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
 validateStatement stmt tables = case stmt of
-  SelectAll tableNames whereClause _ -> returnError $ Data.List.all (`Data.List.elem` Data.List.map fst tables) tableNames && validateWhereClause whereClause tables
-  SelectColumns tableNames cols whereClause _ -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
-  SelectAggregate tableNames cols whereClause _ -> returnError $ validateTableAndColumns tableNames (Just cols) tables && validateWhereClause whereClause tables
-  InsertStatement tableName cols vals -> returnError $ validateTableAndColumns [tableName] cols tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip (fromMaybe [] cols) vals)
-  UpdateStatement tableName cols vals whereClause -> returnError $ validateTableAndColumns [tableName] (Just cols) tables && validateWhereClause whereClause tables && Data.List.all (\(column, value) -> selectColumnMatchesValue column tables value) (Data.List.zip cols vals)
-  DeleteStatement tableName whereClause -> returnError $ tableName `Data.List.elem` Data.List.map fst tables && validateWhereClause whereClause tables
-  ShowTablesStatement -> returnError True
-  ShowTableStatement tableName -> returnError $ Data.List.elem tableName $ Data.List.map fst tables
-  Invalid err -> (False, err)
+  SelectAll tableNames whereClause sortClause ->
+    returnError $ validateSelectAll tableNames whereClause sortClause tables
+  SelectColumns tableNames cols whereClause sortClause ->
+    returnError $ validateSelectColumns tableNames (Just cols) whereClause sortClause tables
+  SelectAggregate tableNames cols whereClause sortClause ->
+    returnError $ validateSelectAggregate tableNames cols whereClause sortClause tables
+  InsertStatement tableName cols vals ->
+    returnError $ validateTableAndColumns [tableName] cols tables &&
+      all (\(column, value) -> selectColumnMatchesValue column tables value) (zip (fromMaybe [] cols) vals)
+  UpdateStatement tableName cols vals whereClause ->
+    returnError $ validateTableAndColumns [tableName] (Just cols) tables &&
+      validateWhereClause whereClause tables &&
+      all (\(column, value) -> selectColumnMatchesValue column tables value) (zip cols vals)
+  DeleteStatement tableName whereClause ->
+    returnError $ tableName `elem` map fst tables && validateWhereClause whereClause tables
+  ShowTablesStatement ->
+    returnError True
+  CreateTableStatement tableName cols ->
+    returnError True
+  DropTableStatement tableName ->
+    validateDropTableStatement (DropTableStatement tableName) tables
+  ShowTableStatement tableName ->
+    returnError $ elem tableName $ map fst tables
+  Invalid err ->
+    (False, err)
 
-returnError :: Bool -> (Bool, ErrorMessage)
-returnError bool = (bool, "Non existant columns or tables in statement or values dont match column")
+returnError :: Bool -> (Bool, String)
+returnError bool = (bool, "Non existent columns or tables in statement or values don't match column")
+
+validateSelectAll :: [TableName] -> Maybe WhereClause -> Maybe SortClause -> [(TableName, DataFrame)] -> Bool
+validateSelectAll tableNames whereClause sortClause tables =
+  all (`elem` map fst tables) tableNames &&
+  validateWhereClause whereClause tables &&
+  validateSortClause sortClause tables
+
+validateSelectColumns :: [TableName] -> Maybe [SelectColumn] -> Maybe WhereClause -> Maybe SortClause -> [(TableName, DataFrame)] -> Bool
+validateSelectColumns tableNames cols whereClause sortClause tables =
+  validateTableAndColumns tableNames cols tables &&
+  validateWhereClause whereClause tables &&
+  validateSortClause sortClause tables
+
+validateSelectAggregate :: [TableName] -> [SelectColumn] -> Maybe WhereClause -> Maybe SortClause -> [(TableName, DataFrame)] -> Bool
+validateSelectAggregate tableNames cols whereClause sortClause tables =
+  validateTableAndColumns tableNames (Just cols) tables &&
+  validateWhereClause whereClause tables &&
+  validateSortClause sortClause tables
+
+validateSortClause :: Maybe SortClause -> [(TableName, DataFrame)] -> Bool
+validateSortClause (Just (ColumnSort selectedColumns _)) tables =
+  all (\col -> case col of
+                 TableColumn tName cName -> columnExistsInTable (TableColumn tName cName) (lookup tName tables)
+                 _ -> False) selectedColumns
+validateSortClause Nothing _ = True
+
+columnExistsInTable :: SelectColumn -> Maybe DataFrame -> Bool
+columnExistsInTable (TableColumn _ colName) (Just (DataFrame cols _)) =
+  any (\(Column name _) -> name == colName) cols
+columnExistsInTable _ _ = False
+
+validateDropTableStatement :: ParsedStatement -> [(TableName, DataFrame)] -> (Bool, ErrorMessage)
+validateDropTableStatement (DropTableStatement tableName) tables =
+    if tableName `elem` map fst tables
+    then (True, "")
+    else (False, "Table does not exist: " ++ tableName)
+validateDropTableStatement _ _ = (False, "Invalid statement type for DropTable validation")
+
 
 validateWhereClause :: Maybe WhereClause -> [(TableName, DataFrame)] -> Bool
 validateWhereClause clause tables = case clause of
