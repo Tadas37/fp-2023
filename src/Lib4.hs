@@ -424,11 +424,29 @@ executeSql statement = do
     getOrderClause (SelectStatement { orderClause = oc }) = oc
     getOrderClause _ = Nothing
     
-    sortDataFrame :: DataFrame -> [(SortOrder, Maybe TableName, ColumnName)] -> Either ErrorMessage DataFrame
-    sortDataFrame (DataFrame columns rows) sortClause = do
-        sortCriteria <- mapM (createSortCriterion columns) sortClause
-        let sortedRows = sortBy (makeMultiColumnComparator sortCriteria) rows
-        return $ DataFrame columns sortedRows
+    sortDataFrame :: DataFrame -> OrderClause -> Either ErrorMessage DataFrame
+    sortDataFrame (DataFrame columns rows) orderClause = 
+        case orderClause of
+            [] -> Right $ DataFrame columns rows
+            (sortOrder, maybeTableName, columnName):_ ->
+                case findColumnIndex columnName columns of
+                    Just idx -> Right $ DataFrame columns (sortBy (compareRows idx sortOrder) rows)
+                    Nothing  -> Left $ "Column not found: " ++ columnName
+
+    findColumnIndex :: ColumnName -> [Column] -> Maybe Int
+    findColumnIndex columnName columns = findIndex (\(Column colName _) -> colName == columnName) columns
+
+    compareRows :: Int -> SortOrder -> Row -> Row -> Ordering
+    compareRows idx Asc row1 row2 = compareValue (row1 !! idx) (row2 !! idx)
+    compareRows idx Desc row1 row2 = compareValue (row2 !! idx) (row1 !! idx)
+
+    compareValue :: Value -> Value -> Ordering
+    compareValue (IntegerValue i1) (IntegerValue i2) = Prelude.compare i1 i2
+    compareValue (StringValue s1) (StringValue s2) = Prelude.compare s1 s2
+    compareValue (BoolValue b1) (BoolValue b2) = Prelude.compare b1 b2
+    compareValue NullValue NullValue = EQ
+    compareValue (DateTimeValue dt1) (DateTimeValue dt2) = Prelude.compare dt1 dt2
+    compareValue _ _ = EQ
 
     executeDelete parsedStatement tables = do
         let deleteResult = deleteRows parsedStatement tables
@@ -456,30 +474,8 @@ getNonSelectTableNameFromStatement _ = error "Non-select statement expected"
 emptyDataFrame :: DataFrame
 emptyDataFrame = DataFrame [] []
 
-createSortCriterion :: [Column] -> (SortOrder, Maybe TableName, ColumnName) -> Either ErrorMessage (Int, SortOrder)
-createSortCriterion columns (direction, maybeTableName, columnName) =
-    if all isDigit columnName
-    then let idx = read columnName - 1
-          in if idx >= 0 && idx < length columns
-            then Right (idx, direction)
-            else Left $ "Column index out of range: " ++ columnName
-    else let nameToMatch = if isJust maybeTableName then columnName else columnName
-          in case findIndex (matchesColumn nameToMatch) columns of
-              Just idx -> Right (idx, direction)
-              Nothing -> Left $ "Column not found: " ++ nameToMatch
-
 matchesColumn :: String -> Column -> Bool
 matchesColumn fullName (Column colName _) = colName == fullName
-
-makeMultiColumnComparator :: [(Int, SortOrder)] -> Row -> Row -> Ordering
-makeMultiColumnComparator [] _ _ = EQ
-makeMultiColumnComparator ((idx, dir):criteria) row1 row2 =
-    let primaryOrder = compareValue1 dir (row1 !! idx) (row2 !! idx)
-    in if primaryOrder == EQ then makeMultiColumnComparator criteria row1 row2 else primaryOrder
-
-compareValue1 :: SortOrder -> Value -> Value -> Ordering
-compareValue1 Asc v1 v2 = Prelude.compare v1 v2
-compareValue1 Desc v1 v2 = Prelude.compare v2 v1
 
 parseYAMLContent :: FileContent -> Either ErrorMessage (TableName, DataFrame)
 parseYAMLContent content =
