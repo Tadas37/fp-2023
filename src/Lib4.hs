@@ -432,13 +432,23 @@ executeSql statement = do
     convertSelectColumnToOrderClause _ = Nothing
 
     sortDataFrame :: DataFrame -> OrderClause -> Either ErrorMessage DataFrame
-    sortDataFrame (DataFrame columns rows) orderClause = 
+    sortDataFrame df@(DataFrame columns rows) orderClause =
         case orderClause of
-            [] -> Right $ DataFrame columns rows
-            (sortOrder, maybeTableName, columnName):_ ->
-                case findColumnIndex columnName columns of
-                    Just idx -> Right $ DataFrame columns (sortBy (compareRows idx sortOrder) rows)
-                    Nothing  -> Left $ "Column not found: " ++ columnName
+            [] -> Right df
+            _ -> Right $ DataFrame columns (sortRowsByMultipleCriteria rows orderClause columns)
+
+    sortRowsByMultipleCriteria :: [Row] -> OrderClause -> [Column] -> [Row]
+    sortRowsByMultipleCriteria rows orderClause columns = 
+        sortBy (multiColumnComparator orderClause columns) rows
+
+    multiColumnComparator :: OrderClause -> [Column] -> Row -> Row -> Ordering
+    multiColumnComparator [] _ _ _ = EQ
+    multiColumnComparator ((sortOrder, maybeTableName, columnName):rest) columns row1 row2 =
+        case findColumnIndex columnName columns of
+            Just idx ->
+                let primaryOrder = compareRows idx sortOrder row1 row2
+                in if primaryOrder == EQ then multiColumnComparator rest columns row1 row2 else primaryOrder
+            Nothing -> EQ
 
     findColumnIndex :: ColumnName -> [Column] -> Maybe Int
     findColumnIndex columnName columns = findIndex (\(Column colName _) -> colName == columnName) columns
