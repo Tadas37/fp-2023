@@ -144,12 +144,6 @@ data ParsedStatement
   | CreateTableStatement TableName [Column]
   | DropTableStatement TableName
   | Invalid ErrorMessage
-  | SelectStatement
-      { selectedTables :: SelectedTables
-      , selectedColumns :: Maybe SelectedColumns
-      , whereClause :: Maybe WhereClause
-      , orderClause :: Maybe OrderClause 
-      }
   deriving (Show, Eq)
 
 
@@ -421,9 +415,22 @@ executeSql statement = do
           Nothing -> return $ Right df
 
     getOrderClause :: ParsedStatement -> Maybe [(SortOrder, Maybe TableName, ColumnName)]
-    getOrderClause (SelectStatement { orderClause = oc }) = oc
+    getOrderClause (SelectAll _ _ (Just sortClause)) = convertSortClause sortClause
+    getOrderClause (SelectAggregate _ _ _ (Just sortClause)) = convertSortClause sortClause
+    getOrderClause (SelectColumns _ _ _ (Just sortClause)) = convertSortClause sortClause
     getOrderClause _ = Nothing
-    
+
+    convertSortClause :: SortClause -> Maybe [(SortOrder, Maybe TableName, ColumnName)]
+    convertSortClause (ColumnSort selectedColumns maybeSortOrder) =
+        let convertedColumns = mapMaybe convertSelectColumnToOrderClause selectedColumns
+        in case maybeSortOrder of
+            Just sortOrder -> Just $ map (\(tableName, columnName) -> (sortOrder, tableName, columnName)) convertedColumns
+            Nothing -> Nothing
+
+    convertSelectColumnToOrderClause :: SelectColumn -> Maybe (Maybe TableName, ColumnName)
+    convertSelectColumnToOrderClause (TableColumn tableName columnName) = Just (Just tableName, columnName)
+    convertSelectColumnToOrderClause _ = Nothing
+
     sortDataFrame :: DataFrame -> OrderClause -> Either ErrorMessage DataFrame
     sortDataFrame (DataFrame columns rows) orderClause = 
         case orderClause of
