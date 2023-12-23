@@ -493,6 +493,14 @@ main = hspec $ do
     it "validates a correct Delete statement" $ do
       let statement = Lib3.DeleteStatement "employees" Nothing
       Lib3.validateStatement statement sampleDatabase `shouldBe` (True, "Non existant columns or tables in statement or values dont match column")
+     
+    it "validates a DropTable statement" $ do
+      let statement = Lib4.DropTableStatement "employees"
+      Lib4.validateStatement statement sampleDatabase `shouldBe` (True, "")
+
+    it "validates a CreateTable statement" $ do
+      let statement = Lib4.CreateTableStatement "employees"  [Column "id" IntegerType, Column "name" StringType]
+      Lib4.validateStatement statement sampleDatabase `shouldBe` (True, "Non existent columns or tables in statement or values don't match column")
 
     it "identifies Delete on a non-existent table" $ do
       let statement = Lib3.DeleteStatement "nonexistent" Nothing
@@ -676,6 +684,18 @@ main = hspec $ do
     it "handles incorrect create table statement with invalid datatype" $ do
       let input = "create table exampleTable (id in , name varchar );"
       Lib4.parseSql input `shouldSatisfy` isLeft
+  describe "order by" $ do
+    it "parses ORDER BY clause with ascending order correctly" $ do
+      let query = "SELECT * FROM employees e ORDER BY e.name ASC;"
+      Lib4.parseSql query `shouldSatisfy` isRight
+
+    it "parses ORDER BY clause with descending order correctly" $ do
+      let query = "SELECT * FROM employees e ORDER BY e.name DESC;"
+      Lib4.parseSql query `shouldSatisfy` isRight
+
+    it "parses ORDER BY clause with multiple columns correctly" $ do
+      let query = "SELECT * FROM employees e ORDER BY e.name e.employeeId DESC;"
+      Lib4.parseSql query `shouldSatisfy` isRight
 
 extractRows :: DataFrame -> [Row]
 extractRows (DataFrame _ rows) = rows
